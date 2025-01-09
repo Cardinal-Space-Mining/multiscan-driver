@@ -22,11 +22,11 @@
 
 
 // these are mutually exlusive
-#define POINT_FIELD_ENABLE_UP_TO_XYZ        0
-#define POINT_FIELD_ENABLE_UP_TO_INTENSITY  1
-#define POINT_FIELD_ENABLE_UP_TO_RANGE      2
-#define POINT_FIELD_ENABLE_UP_TO_ANGULAR    3
-#define POINT_FIELD_ENABLE_UP_TO_POINT_IDX  4
+#define POINT_FIELD_ENABLE_UP_TO_XYZ        0   // just xyz
+#define POINT_FIELD_ENABLE_UP_TO_INTENSITY  1   // xyz, intensity
+#define POINT_FIELD_ENABLE_UP_TO_RANGE      2   // xyz, intensity, range
+#define POINT_FIELD_ENABLE_UP_TO_ANGULAR    3   // xyz, intensity, range, azimuth, elevation
+#define POINT_FIELD_ENABLE_UP_TO_POINT_IDX  4   // xyz, intensity, range, azimuth, elevation, layer, echo, index
 // these form a bit field (3rd and 4th bits)
 #define POINT_FIELD_ENABLE_TS               8
 #define POINT_FIELD_ENABLE_REFLECTOR        16
@@ -200,19 +200,21 @@ MultiscanNode::MultiscanNode(bool autostart) :
             .set__name("tl")
             .set__datatype(sensor_msgs::msg::PointField::UINT32)
             .set__count(1)
-            .set__offset(40),
+            .set__offset(4 * NUM_CONTIGUOUS_POINT_FIELDS),
         sensor_msgs::msg::PointField{}
             .set__name("th")
             .set__datatype(sensor_msgs::msg::PointField::UINT32)
             .set__count(1)
-            .set__offset(44),
+            .set__offset(4 * NUM_CONTIGUOUS_POINT_FIELDS + 4),
     #endif
     #if (POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_REFLECTOR)
         sensor_msgs::msg::PointField{}
             .set__name("reflective")
             .set__datatype(sensor_msgs::msg::PointField::FLOAT32)
             .set__count(1)
-            .set__offset(48)
+            .set__offset(
+                (4 * NUM_CONTIGUOUS_POINT_FIELDS) +
+                (8 * ((POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_TS) > 0)) )
     #endif
     };
 
@@ -305,6 +307,7 @@ void MultiscanNode::run_receiver()
                         uint32_t bytes_to_receive = 0;
                         uint32_t udp_payload_offset = 0;
 
+                        chrono_system_time recv_start_timestamp = chrono_system_clock::now();
                         if(this->config.use_msgpack)
                         {
                             payload_length_bytes = sick_scansegment_xd::Convert4Byte(udp_buffer.data() + udp_msg_start_seq.size());
@@ -315,7 +318,6 @@ void MultiscanNode::run_receiver()
                         {
                             bool parse_success = false;
                             uint32_t num_bytes_required = 0;
-                            chrono_system_time recv_start_timestamp = chrono_system_clock::now();
                             while (this->is_running &&
                                 (parse_success = sick_scansegment_xd::CompactDataParser::ParseSegment(udp_buffer.data(), bytes_received, 0, payload_length_bytes, num_bytes_required )) == false &&
                                 (udp_recv_timeout < 0 || sick_scansegment_xd::Seconds(recv_start_timestamp, chrono_system_clock::now()) < udp_recv_timeout)) // read blocking (udp_recv_timeout < 0) or udp_recv_timeout in seconds
@@ -369,7 +371,7 @@ void MultiscanNode::run_receiver()
                             sick_scansegment_xd::ScanSegmentParserOutput segment;
                             if(this->config.use_msgpack)
                             {
-                                if(!sick_scansegment_xd::MsgPackParser::Parse(udp_buffer, fifo_clock::now(), segment, true, false))
+                                if(!sick_scansegment_xd::MsgPackParser::Parse(udp_buffer, recv_start_timestamp, segment, true, false))
                                 {
                                     RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Msgpack parse failed.");
                                     continue;
@@ -377,7 +379,7 @@ void MultiscanNode::run_receiver()
                             }
                             else
                             {
-                                if(!sick_scansegment_xd::CompactDataParser::Parse(udp_buffer, fifo_clock::now(), segment, 0, true, false))
+                                if(!sick_scansegment_xd::CompactDataParser::Parse(udp_buffer, recv_start_timestamp, segment, 0, true, false))
                                 {
                                     RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Compact parse failed.");
                                     continue;
@@ -428,7 +430,7 @@ void MultiscanNode::run_receiver()
                                 constexpr size_t MS100_NOMINAL_POINTS_PER_SCAN = MS100_POINTS_PER_SEGMENT_ECHO * MS100_SEGMENTS_PER_FRAME;  // single echo
                                 constexpr size_t POINT_CONTINUOUS_BYTE_LEN = NUM_CONTIGUOUS_POINT_FIELDS * 4;
                                 constexpr size_t POINT_BYTE_LEN = NUM_POINT_FIELDS * 4;
-                                scan.data.reserve(MS100_NOMINAL_POINTS_PER_SCAN * POINT_BYTE_LEN);  // 52 bytes per point
+                                scan.data.reserve(MS100_NOMINAL_POINTS_PER_SCAN * POINT_BYTE_LEN);  // 52 bytes per point (max)
                                 scan.data.resize(0);
 
                                 uint64_t earliest_ts = std::numeric_limits<uint64_t>::max();
@@ -446,12 +448,17 @@ void MultiscanNode::run_receiver()
                                             {
                                                 scan.data.resize(scan.data.size() + POINT_BYTE_LEN);
                                                 uint8_t* _point_data = scan.data.end().base() - POINT_BYTE_LEN;
+
                                                 memcpy(_point_data, &_point, POINT_CONTINUOUS_BYTE_LEN);
+
                                             #if (POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_TS)
-                                                reinterpret_cast<uint64_t*>(_point_data)[POINT_CONTINUOUS_BYTE_LEN / sizeof(uint64_t)] = _point.lidar_timestamp_microsec;
+                                                reinterpret_cast<uint64_t*>(_point_data)[
+                                                    (POINT_CONTINUOUS_BYTE_LEN / sizeof(uint64_t)) ] = _point.lidar_timestamp_microsec;
                                             #endif
                                             #if (POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_REFLECTOR)
-                                                reinterpret_cast<float*>(_point_data)[POINT_CONTINUOUS_BYTE_LEN / sizeof(float) + ((POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_TS) > 0) * 2] = _point.reflectorbit;
+                                                reinterpret_cast<float*>(_point_data)[
+                                                    (POINT_CONTINUOUS_BYTE_LEN / sizeof(float)) +
+                                                    (((POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_TS) > 0) * 2) ] = _point.reflectorbit;
                                             #endif
                                             }
                                         }
