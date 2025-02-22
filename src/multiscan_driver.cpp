@@ -8,9 +8,13 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include <std_msgs/msg/float32.hpp>
+#include <std_msgs/msg/u_int32.hpp>
+
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
+#include "stats/stats.hpp"
 #include "util.hpp"
 #include "pub_map.hpp"
 #include "sick_scan_xd/udp_sockets.h"
@@ -55,6 +59,9 @@
         ((POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_REFLECTOR) > 0) \
     )
 
+#define STATS_PUB_FREQUNCY       10
+#define STATS_PUB_DELTA_TIME_MS (1000 / STATS_PUB_FREQUNCY)
+
 
 class MultiscanNode : public rclcpp::Node
 {
@@ -67,6 +74,7 @@ public:
 
 protected:
     void run_receiver();
+    void pub_stats();
 
 private:
     static constexpr size_t
@@ -95,11 +103,16 @@ private:
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr scan_pub;
     rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr last_cpu_pub, avg_cpu_pub, mem_usage_pub;
+    rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr n_threads_pub;
 
     sensor_msgs::msg::PointCloud2::_fields_type scan_fields;
 
     sick_scansegment_xd::UdpReceiverSocketImpl udp_recv_socket;
-    std::thread recv_thread;
+    std::thread recv_thread, pub_thread;
+    
+    util::proc::ProcessMetrics process_utilization;
+
     std::atomic_bool is_running = true;
 
 };
@@ -135,6 +148,10 @@ MultiscanNode::MultiscanNode(bool autostart) :
 
     this->scan_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("lidar_scan", rclcpp::SensorDataQoS{});
     this->imu_pub = this->create_publisher<sensor_msgs::msg::Imu>("lidar_imu", rclcpp::SensorDataQoS{});
+    this->last_cpu_pub = this->create_publisher<std_msgs::msg::Float32>("multiscan_driver/process_metrics/last_cpu_percent", rclcpp::SensorDataQoS{});
+    this->avg_cpu_pub = this->create_publisher<std_msgs::msg::Float32>("multiscan_driver/process_metrics/avg_cpu_percent", rclcpp::SensorDataQoS{});
+    this->mem_usage_pub = this->create_publisher<std_msgs::msg::Float32>("multiscan_driver/process_metrics/mem_usage_mb", rclcpp::SensorDataQoS{});
+    this->n_threads_pub = this->create_publisher<std_msgs::msg::UInt32>("multiscan_driver/process_metrics/num_threads", rclcpp::SensorDataQoS{});
 
     this->scan_fields = {
         sensor_msgs::msg::PointField{}
@@ -235,6 +252,7 @@ void MultiscanNode::start()
     {
         this->is_running = true;
         this->recv_thread = std::thread{ &MultiscanNode::run_receiver, this };
+        this->pub_thread = std::thread{ &MultiscanNode::pub_stats, this };
     }
 }
 
@@ -522,13 +540,53 @@ void MultiscanNode::run_receiver()
     }
 }
 
+void MultiscanNode::pub_stats()
+{
+    while(this->is_running)
+    {
+        //get current time -> store it
+        //update the stats struct 
+        //publish them
+        //wait until deltatime=PUB_DURATION
+        
+        const auto begin = std::chrono::system_clock::now();
+
+        this->process_utilization.update();
+
+        double mem_usage;
+        size_t num_threads;
+        util::proc::getProcessStats(mem_usage, num_threads);
+
+        std_msgs::msg::Float32 f;
+        std_msgs::msg::UInt32 u;
+
+        f.data = this->process_utilization.last_cpu_percent;
+        this->last_cpu_pub->publish(f);
+        f.data = this->process_utilization.avg_cpu_percent;
+        this->avg_cpu_pub->publish(f);
+        f.data = static_cast<float>(mem_usage);
+        this->mem_usage_pub->publish(f);
+        u.data = static_cast<uint32_t>(num_threads);
+        this->n_threads_pub->publish(u);
+
+        std::this_thread::sleep_until(begin + std::chrono::milliseconds(STATS_PUB_DELTA_TIME_MS));
+    }
+}
+
 void MultiscanNode::shutdown()
 {
-    if(this->is_running || this->recv_thread.joinable())
+    if(this->is_running)
     {
         this->is_running = false;
-        this->udp_recv_socket.ForceStop();
-        this->recv_thread.join();
+        if(this->recv_thread.joinable())
+        {
+            this->udp_recv_socket.ForceStop();
+            this->recv_thread.join();
+        }
+        if (this->pub_thread.joinable())
+        {
+            this->pub_thread.join();
+        }
     }
 }
 

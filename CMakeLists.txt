@@ -28,6 +28,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(Eigen3 REQUIRED)
 
+
 include_directories(${EIGEN3_INCLUDE_DIRS})
 
 include_directories(include)
@@ -56,9 +57,13 @@ add_library(scansegment_xd STATIC
   "src/sick_scan_xd/tcp/wsa_init.cpp")
 ament_target_dependencies(scansegment_xd)
 
+add_library(stats STATIC "src/stats/stats.cpp")
+ament_target_dependencies(stats)
+
 add_executable(multiscan_driver "src/multiscan_driver.cpp")
 target_link_libraries(multiscan_driver
   scansegment_xd
+  stats
   Eigen3::Eigen)
 ament_target_dependencies(multiscan_driver
   rclcpp
