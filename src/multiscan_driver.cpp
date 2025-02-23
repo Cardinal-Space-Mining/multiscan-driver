@@ -14,9 +14,10 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
-#include "stats/stats.hpp"
 #include "util.hpp"
 #include "pub_map.hpp"
+#include "stats/stats.hpp"
+
 #include "sick_scan_xd/udp_sockets.h"
 #include "sick_scan_xd/msgpack_parser.h"
 #include "sick_scan_xd/compact_parser.h"
@@ -24,6 +25,9 @@
 #include "sick_scan_xd/sick_scan_common_tcp.h"
 #include "sick_scan_xd/sopas_services.h"
 
+
+#define STATS_PUB_FREQUNCY      10U
+#define STATS_PUB_DELTA_TIME_MS (1000U / STATS_PUB_FREQUNCY)
 
 // these are mutually exlusive
 #define POINT_FIELD_ENABLE_UP_TO_XYZ        0   // just xyz
@@ -59,9 +63,6 @@
         ((POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_REFLECTOR) > 0) \
     )
 
-#define STATS_PUB_FREQUNCY       10
-#define STATS_PUB_DELTA_TIME_MS (1000 / STATS_PUB_FREQUNCY)
-
 
 class MultiscanNode : public rclcpp::Node
 {
@@ -74,7 +75,7 @@ public:
 
 protected:
     void run_receiver();
-    void pub_stats();
+    void publish_stats();
 
 private:
     static constexpr size_t
@@ -103,22 +104,29 @@ private:
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr scan_pub;
     rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub;
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr last_cpu_pub, avg_cpu_pub, mem_usage_pub;
-    rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr n_threads_pub;
 
     sensor_msgs::msg::PointCloud2::_fields_type scan_fields;
 
     sick_scansegment_xd::UdpReceiverSocketImpl udp_recv_socket;
-    std::thread recv_thread, pub_thread;
-    
-    util::proc::ProcessMetrics process_utilization;
 
+    std::thread recv_thread, metrics_thread;
     std::atomic_bool is_running = true;
+
+    struct
+    {
+        rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr last_cpu_pub, avg_cpu_pub, mem_usage_pub;
+        rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr num_threads_pub;
+
+        util::proc::ProcessMetrics process_utilization;
+    }
+    metrics;
 
 };
 
 
-void swapSegmentsNoIMU(sick_scansegment_xd::ScanSegmentParserOutput& a, sick_scansegment_xd::ScanSegmentParserOutput& b)
+void swapSegmentsNoIMU(
+    sick_scansegment_xd::ScanSegmentParserOutput& a,
+    sick_scansegment_xd::ScanSegmentParserOutput& b )
 {
     std::swap(a.scandata, b.scandata);
     std::swap(a.timestamp, b.timestamp);
@@ -148,10 +156,15 @@ MultiscanNode::MultiscanNode(bool autostart) :
 
     this->scan_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("lidar_scan", rclcpp::SensorDataQoS{});
     this->imu_pub = this->create_publisher<sensor_msgs::msg::Imu>("lidar_imu", rclcpp::SensorDataQoS{});
-    this->last_cpu_pub = this->create_publisher<std_msgs::msg::Float32>("multiscan_driver/process_metrics/last_cpu_percent", rclcpp::SensorDataQoS{});
-    this->avg_cpu_pub = this->create_publisher<std_msgs::msg::Float32>("multiscan_driver/process_metrics/avg_cpu_percent", rclcpp::SensorDataQoS{});
-    this->mem_usage_pub = this->create_publisher<std_msgs::msg::Float32>("multiscan_driver/process_metrics/mem_usage_mb", rclcpp::SensorDataQoS{});
-    this->n_threads_pub = this->create_publisher<std_msgs::msg::UInt32>("multiscan_driver/process_metrics/num_threads", rclcpp::SensorDataQoS{});
+
+    this->metrics.last_cpu_pub = this->create_publisher<std_msgs::msg::Float32>(
+                                        "multiscan_driver/process_metrics/last_cpu_percent", rclcpp::SensorDataQoS{} );
+    this->metrics.avg_cpu_pub = this->create_publisher<std_msgs::msg::Float32>(
+                                        "multiscan_driver/process_metrics/avg_cpu_percent", rclcpp::SensorDataQoS{} );
+    this->metrics.mem_usage_pub = this->create_publisher<std_msgs::msg::Float32>(
+                                        "multiscan_driver/process_metrics/mem_usage_mb", rclcpp::SensorDataQoS{} );
+    this->metrics.num_threads_pub = this->create_publisher<std_msgs::msg::UInt32>(
+                                        "multiscan_driver/process_metrics/num_threads", rclcpp::SensorDataQoS{} );
 
     this->scan_fields = {
         sensor_msgs::msg::PointField{}
@@ -248,11 +261,14 @@ MultiscanNode::~MultiscanNode()
 
 void MultiscanNode::start()
 {
+    this->is_running = true;
     if(!this->recv_thread.joinable())
     {
-        this->is_running = true;
         this->recv_thread = std::thread{ &MultiscanNode::run_receiver, this };
-        this->pub_thread = std::thread{ &MultiscanNode::pub_stats, this };
+    }
+    if(!this->metrics_thread.joinable())
+    {
+        this->metrics_thread = std::thread{ &MultiscanNode::publish_stats, this };
     }
 }
 
@@ -540,18 +556,13 @@ void MultiscanNode::run_receiver()
     }
 }
 
-void MultiscanNode::pub_stats()
+void MultiscanNode::publish_stats()
 {
     while(this->is_running)
     {
-        //get current time -> store it
-        //update the stats struct 
-        //publish them
-        //wait until deltatime=PUB_DURATION
-        
         const auto begin = std::chrono::system_clock::now();
 
-        this->process_utilization.update();
+        this->metrics.process_utilization.update();
 
         double mem_usage;
         size_t num_threads;
@@ -560,14 +571,14 @@ void MultiscanNode::pub_stats()
         std_msgs::msg::Float32 f;
         std_msgs::msg::UInt32 u;
 
-        f.data = this->process_utilization.last_cpu_percent;
-        this->last_cpu_pub->publish(f);
-        f.data = this->process_utilization.avg_cpu_percent;
-        this->avg_cpu_pub->publish(f);
+        f.data = this->metrics.process_utilization.last_cpu_percent;
+        this->metrics.last_cpu_pub->publish(f);
+        f.data = this->metrics.process_utilization.avg_cpu_percent;
+        this->metrics.avg_cpu_pub->publish(f);
         f.data = static_cast<float>(mem_usage);
-        this->mem_usage_pub->publish(f);
+        this->metrics.mem_usage_pub->publish(f);
         u.data = static_cast<uint32_t>(num_threads);
-        this->n_threads_pub->publish(u);
+        this->metrics.num_threads_pub->publish(u);
 
         std::this_thread::sleep_until(begin + std::chrono::milliseconds(STATS_PUB_DELTA_TIME_MS));
     }
@@ -575,18 +586,15 @@ void MultiscanNode::pub_stats()
 
 void MultiscanNode::shutdown()
 {
-    if(this->is_running)
+    this->is_running = false;
+    if(this->recv_thread.joinable())
     {
-        this->is_running = false;
-        if(this->recv_thread.joinable())
-        {
-            this->udp_recv_socket.ForceStop();
-            this->recv_thread.join();
-        }
-        if (this->pub_thread.joinable())
-        {
-            this->pub_thread.join();
-        }
+        this->udp_recv_socket.ForceStop();
+        this->recv_thread.join();
+    }
+    if(this->metrics_thread.joinable())
+    {
+        this->metrics_thread.join();
     }
 }
 
