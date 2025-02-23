@@ -36,8 +36,8 @@
     #define IF_PUBLISH_PROCESS_METRICS(...)
 #endif
 
-#define STATS_PUB_FREQUNCY      10U
-#define STATS_PUB_DELTA_TIME_MS (1000U / STATS_PUB_FREQUNCY)
+#define STATS_PUB_FREQUNCY                  10U
+#define STATS_PUB_DELTA_TIME_MS             (1000U / STATS_PUB_FREQUNCY)
 
 // these are mutually exlusive
 #define POINT_FIELD_ENABLE_UP_TO_XYZ        0   // just xyz
@@ -61,10 +61,10 @@
 #define NUM_CONTIGUOUS_POINT_FIELDS \
     ( \
         3 + \
-        ((POINT_FIELD_SECTIONS_ENABLED & 4) >= 1) + \
-        ((POINT_FIELD_SECTIONS_ENABLED & 4) >= 2) + \
-        ((POINT_FIELD_SECTIONS_ENABLED & 4) >= 3) * 2 + \
-        ((POINT_FIELD_SECTIONS_ENABLED & 4) >= 4) * 3 \
+        ((POINT_FIELD_SECTIONS_ENABLED & 7) >= 1) + \
+        ((POINT_FIELD_SECTIONS_ENABLED & 7) >= 2) + \
+        ((POINT_FIELD_SECTIONS_ENABLED & 7) >= 3) * 2 + \
+        ((POINT_FIELD_SECTIONS_ENABLED & 7) >= 4) * 3 \
     )
 #define NUM_POINT_FIELDS \
     ( \
@@ -200,21 +200,21 @@ MultiscanNode::MultiscanNode(bool autostart) :
             .set__datatype(sensor_msgs::msg::PointField::FLOAT32)
             .set__count(1)
             .set__offset(8),
-    #if (POINT_FIELD_SECTIONS_ENABLED & 4) >= POINT_FIELD_ENABLE_UP_TO_INTENSITY
+    #if (POINT_FIELD_SECTIONS_ENABLED & 7) >= POINT_FIELD_ENABLE_UP_TO_INTENSITY
         sensor_msgs::msg::PointField{}
             .set__name("intensity")
             .set__datatype(sensor_msgs::msg::PointField::FLOAT32)
             .set__count(1)
             .set__offset(12),
     #endif
-    #if (POINT_FIELD_SECTIONS_ENABLED & 4) >= POINT_FIELD_ENABLE_UP_TO_RANGE
+    #if (POINT_FIELD_SECTIONS_ENABLED & 7) >= POINT_FIELD_ENABLE_UP_TO_RANGE
         sensor_msgs::msg::PointField{}
             .set__name("range")
             .set__datatype(sensor_msgs::msg::PointField::FLOAT32)
             .set__count(1)
             .set__offset(16),
     #endif
-    #if (POINT_FIELD_SECTIONS_ENABLED & 4) >= POINT_FIELD_ENABLE_UP_TO_ANGULAR
+    #if (POINT_FIELD_SECTIONS_ENABLED & 7) >= POINT_FIELD_ENABLE_UP_TO_ANGULAR
         sensor_msgs::msg::PointField{}
             .set__name("azimuth")
             .set__datatype(sensor_msgs::msg::PointField::FLOAT32)
@@ -226,7 +226,7 @@ MultiscanNode::MultiscanNode(bool autostart) :
             .set__count(1)
             .set__offset(24),
     #endif
-    #if (POINT_FIELD_SECTIONS_ENABLED & 4) >= POINT_FIELD_ENABLE_UP_TO_POINT_IDX
+    #if (POINT_FIELD_SECTIONS_ENABLED & 7) >= POINT_FIELD_ENABLE_UP_TO_POINT_IDX
         sensor_msgs::msg::PointField{}
             .set__name("layer")
             .set__datatype(sensor_msgs::msg::PointField::UINT32)
@@ -296,7 +296,8 @@ void MultiscanNode::run_receiver()
 {
     while(this->is_running)
     {
-        RCLCPP_INFO(this->get_logger(),
+        RCLCPP_INFO(
+            this->get_logger(),
             "[MULTISCAN DRIVER]: Initializing connections using the following parameters:"
             "\n\tLidar IP address: %s"
             "\n\tDriver IP address: %s"
@@ -323,7 +324,10 @@ void MultiscanNode::run_receiver()
 
             if(sopas_tcp.isConnected())
             {
-                RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: TCP connected! Sending startup commands...");
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "[MULTISCAN DRIVER]: TCP connected! Sending startup commands..." );
+
                 sopas_service.sendAuthorization();
                 sopas_service.sendMultiScanStartCmd(
                     this->config.driver_hostname,
@@ -331,11 +335,16 @@ void MultiscanNode::run_receiver()
                     (2 - this->config.use_msgpack),
                     true,
                     this->config.lidar_udp_port);
-                RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Successfully sent all startup commands. Proceeding to UDP decode loop.");
+
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "[MULTISCAN DRIVER]: Successfully sent all startup commands. Proceeding to UDP decode loop." );
             }
             else
             {
-                RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: TCP not connected! Could not send SOPAS initialization command!");
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "[MULTISCAN DRIVER]: TCP not connected! Could not send SOPAS initialization command!" );
                 // TODO: restart
             }
 
@@ -372,20 +381,30 @@ void MultiscanNode::run_receiver()
                         {
                             bool parse_success = false;
                             uint32_t num_bytes_required = 0;
-                            while (this->is_running &&
-                                (parse_success = sick_scansegment_xd::CompactDataParser::ParseSegment(udp_buffer.data(), bytes_received, 0, payload_length_bytes, num_bytes_required )) == false &&
-                                (udp_recv_timeout < 0 || sick_scansegment_xd::Seconds(recv_start_timestamp, chrono_system_clock::now()) < udp_recv_timeout)) // read blocking (udp_recv_timeout < 0) or udp_recv_timeout in seconds
+                            while(
+                                this->is_running &&
+                                !(parse_success = sick_scansegment_xd::CompactDataParser::ParseSegment(udp_buffer.data(), bytes_received, 0, payload_length_bytes, num_bytes_required)) &&
+                                (udp_recv_timeout < 0 || sick_scansegment_xd::Seconds(recv_start_timestamp, chrono_system_clock::now()) < udp_recv_timeout) ) // read blocking (udp_recv_timeout < 0) or udp_recv_timeout in seconds
                             {
                                 if(num_bytes_required > 1024 * 1024)
                                 {
                                     parse_success = false;
                                     // RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Received %ld bytes (compact), %lu bytes required - probably incorrect payload.", bytes_received, num_bytes_required + sizeof(uint32_t));
-                                    sick_scansegment_xd::CompactDataParser::ParseSegment(udp_buffer.data(), bytes_received, 0, payload_length_bytes, num_bytes_required , 0.0f, 1); // parse again with debug output after error
+                                    sick_scansegment_xd::CompactDataParser::ParseSegment(
+                                        udp_buffer.data(),
+                                        bytes_received,
+                                        0,
+                                        payload_length_bytes,
+                                        num_bytes_required,
+                                        0.0f,
+                                        1 ); // parse again with debug output after error
                                     break;
                                 }
                                 // RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: %ld bytes received (compact), %lu bytes or more required.", bytes_received, num_bytes_required + sizeof(uint32_t));
-                                while(this->is_running && bytes_received < num_bytes_required + sizeof(uint32_t) && // payload + 4 byte CRC required
-                                    (udp_recv_timeout < 0 || sick_scansegment_xd::Seconds(recv_start_timestamp, chrono_system_clock::now()) < udp_recv_timeout)) // read blocking (udp_recv_timeout < 0) or udp_recv_timeout in seconds
+                                while(
+                                    this->is_running &&
+                                    (bytes_received < num_bytes_required + sizeof(uint32_t)) && // payload + 4 byte CRC required
+                                    (udp_recv_timeout < 0 || sick_scansegment_xd::Seconds(recv_start_timestamp, chrono_system_clock::now()) < udp_recv_timeout) ) // read blocking (udp_recv_timeout < 0) or udp_recv_timeout in seconds
                                 {
                                     std::vector<uint8_t> chunk_buffer(RECV_BUFFER_SIZE, 0);
                                     size_t chunk_bytes_received = this->udp_recv_socket.Receive(chunk_buffer);
@@ -506,13 +525,13 @@ void MultiscanNode::run_receiver()
                                                 memcpy(_point_data, &_point, POINT_CONTINUOUS_BYTE_LEN);
 
                                             #if (POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_TS)
-                                                reinterpret_cast<uint64_t*>(_point_data)[
-                                                    (POINT_CONTINUOUS_BYTE_LEN / sizeof(uint64_t)) ] = _point.lidar_timestamp_microsec;
+                                                #define POINT_TS_U64_IDX (POINT_CONTINUOUS_BYTE_LEN / sizeof(uint64_t))
+                                                reinterpret_cast<uint64_t*>(_point_data)[POINT_TS_U64_IDX] = _point.lidar_timestamp_microsec;
+                                                #undef POINT_TS_U64_IDX
                                             #endif
                                             #if (POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_REFLECTOR)
-                                                reinterpret_cast<float*>(_point_data)[
-                                                    (POINT_CONTINUOUS_BYTE_LEN / sizeof(float)) +
-                                                    (((POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_TS) > 0) * 2) ] = _point.reflectorbit;
+                                                #define POINT_RB_F32_IDX ( (POINT_CONTINUOUS_BYTE_LEN / sizeof(float)) + (((POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_TS) > 0) * 2) )
+                                                reinterpret_cast<float*>(_point_data)[POINT_RB_F32_IDX] = _point.reflectorbit;
                                             #endif
                                             }
                                         }
