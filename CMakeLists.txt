@@ -58,6 +58,7 @@ add_library(scansegment_xd STATIC
 ament_target_dependencies(scansegment_xd)
 
 add_library(stats STATIC "src/stats/stats.cpp")
+target_link_libraries(stats sensors)
 ament_target_dependencies(stats)
 
 add_executable(multiscan_driver "src/multiscan_driver.cpp")

@@ -5,6 +5,7 @@
 #include <vector>
 #include <deque>
 #include <limits>
+#include <iostream>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -14,6 +15,9 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
+
+
+#include "stats/stats.hpp"
 #include "util.hpp"
 #include "pub_map.hpp"
 #include "stats/stats.hpp"
@@ -611,10 +615,13 @@ void MultiscanNode::publish_stats()
         std_msgs::msg::Float32 f;
         std_msgs::msg::UInt32 u;
 
-        f.data = this->metrics.process_utilization.last_cpu_percent;
-        this->metrics.last_cpu_pub->publish(f);
-        f.data = this->metrics.process_utilization.avg_cpu_percent;
-        this->metrics.avg_cpu_pub->publish(f);
+        //std::cout << "Cpu Tempature " <<util::proc::readCpuTemp() << " C" << std::endl;
+        double a = util::proc::readCpuTemp();
+
+        f.data = this->process_utilization.last_cpu_percent;
+        this->last_cpu_pub->publish(f);
+        f.data = this->process_utilization.avg_cpu_percent;
+        this->avg_cpu_pub->publish(f);
         f.data = static_cast<float>(mem_usage);
         this->metrics.mem_usage_pub->publish(f);
         u.data = static_cast<uint32_t>(num_threads);
