@@ -130,7 +130,7 @@ private:
 #if PUBLISH_PROCESS_METRICS
     struct
     {
-        rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr last_cpu_pub, avg_cpu_pub, mem_usage_pub;
+        rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr last_cpu_pub, avg_cpu_pub, mem_usage_pub, cpu_temp_pub;
         rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr num_threads_pub;
 
         util::proc::ProcessMetrics process_utilization;
@@ -186,6 +186,8 @@ MultiscanNode::MultiscanNode(bool autostart) :
                                         "multiscan_driver/process_metrics/mem_usage_mb", rclcpp::SensorDataQoS{} );
     this->metrics.num_threads_pub = this->create_publisher<std_msgs::msg::UInt32>(
                                         "multiscan_driver/process_metrics/num_threads", rclcpp::SensorDataQoS{} );
+    this->metrics.cpu_temp_pub = this->create_publisher<std_msgs::msg::Float32>(
+                                        "multiscan_driver/process_metrics/cpu_temp", rclcpp::SensorDataQoS{} );
 #endif
 
     this->scan_fields = {
@@ -615,8 +617,9 @@ void MultiscanNode::publish_stats()
         std_msgs::msg::Float32 f;
         std_msgs::msg::UInt32 u;
 
-        //std::cout << "Cpu Tempature " <<util::proc::readCpuTemp() << " C" << std::endl;
-        double a = util::proc::readCpuTemp();
+        //RCLCPP_INFO(this->get_logger(), "Package Temperature : %f", util::proc::readCpuTemp());
+        f.data = util::proc::readCpuTemp();
+        this->metrics.cpu_temp_pub->publish(f);
 
         f.data = this->metrics.process_utilization.last_cpu_percent;
         this->metrics.avg_cpu_pub->publish(f);

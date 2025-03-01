@@ -188,23 +188,18 @@ double readCpuTemp()
     const sensors_chip_name *chip;
     int chip_nr = 0;
     double temp_value;
-    std::cout << "a" << std::endl;
     if ((chip = sensors_get_detected_chips(NULL, &chip_nr)))
     {
         const sensors_feature *feature;
         int feature_nr = 0;
-        std::cout << "b" << std::endl;
-        while ((feature = sensors_get_features(chip, &feature_nr)))
+        if ((feature = sensors_get_features(chip, &feature_nr)))
         {
             if (feature->type == SENSORS_FEATURE_TEMP)
             {
                 const sensors_subfeature *subfeature = sensors_get_subfeature(chip, feature, SENSORS_SUBFEATURE_TEMP_INPUT);
-                //std::cout << "c" << std::endl;
                 if (subfeature)
                 {
-                    if (sensors_get_value(chip, subfeature->number, &temp_value) == 0){
-                        std::cout << "  " << feature->name << ": " <<temp_value << " C" << std::endl;
-                    } 
+                    if (sensors_get_value(chip, subfeature->number, &temp_value) == 0){} 
                     else {temp_value = -1;}
                 }
             }
