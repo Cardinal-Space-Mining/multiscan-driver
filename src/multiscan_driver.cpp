@@ -31,7 +31,7 @@
 
 
 #ifndef PUBLISH_PROCESS_METRICS
-#define PUBLISH_PROCESS_METRICS 0
+#define PUBLISH_PROCESS_METRICS 1
 #endif
 
 #if PUBLISH_PROCESS_METRICS
@@ -618,10 +618,10 @@ void MultiscanNode::publish_stats()
         //std::cout << "Cpu Tempature " <<util::proc::readCpuTemp() << " C" << std::endl;
         double a = util::proc::readCpuTemp();
 
-        f.data = this->process_utilization.last_cpu_percent;
-        this->last_cpu_pub->publish(f);
-        f.data = this->process_utilization.avg_cpu_percent;
-        this->avg_cpu_pub->publish(f);
+        f.data = this->metrics.process_utilization.last_cpu_percent;
+        this->metrics.avg_cpu_pub->publish(f);
+        f.data = this->metrics.process_utilization.avg_cpu_percent;
+        this->metrics.avg_cpu_pub->publish(f);
         f.data = static_cast<float>(mem_usage);
         this->metrics.mem_usage_pub->publish(f);
         u.data = static_cast<uint32_t>(num_threads);
