@@ -2,8 +2,8 @@
  * ErrorHandler.
  *
  */
-#include <stdio.h>      // for printf() and fprintf()
-#include <stdlib.h>     // for atoi() and exit()
+#include <cstdio>      // for printf() and fprintf()
+#include <cstdlib>     // for atoi() and exit()
 // #include <string.h>     // for memset()
 //#include <backward/iostream.h>	// fuer cout()
 // #include "pthread.h"
@@ -28,7 +28,7 @@ void doNothing()
 /**
     * Fehler-"behandlung": Schreibe die Fehlermeldung und beende das Programm.
     */
-void dieWithError(std::string errorMessage)
+void dieWithError(const std::string& errorMessage)
 {
     {
     std::lock_guard<std::mutex> printGuard(m_printMutex);
@@ -37,7 +37,7 @@ void dieWithError(std::string errorMessage)
     // pthread_mutex_lock(&m_printMutex);
     
     // Nachricht schreiben
-    printError(errorMessage.c_str());
+    printError(errorMessage);
     
     // Mutex wieder freigeben
     // pthread_mutex_unlock(&m_printMutex);
@@ -50,9 +50,9 @@ void dieWithError(std::string errorMessage)
 /**
     * Info-Text auf die Ausgabe schreiben.
     */
-void infoMessage(std::string message, bool print)
+void infoMessage(const std::string& message, bool print)
 {
-    if (print == true)
+    if (print)
     {
 #ifndef ROSSIMU
         Time t = Time::now();
@@ -66,7 +66,7 @@ void infoMessage(std::string message, bool print)
         printf("%s ", t.toString().c_str());
 #endif	
         printf ("Info: %s\n", message.c_str());
-        fflush(0);
+        fflush(nullptr);
 
         // Mutex wieder freigeben
         // pthread_mutex_unlock(&m_printMutex);
@@ -78,7 +78,7 @@ void infoMessage(std::string message, bool print)
 //
 // Warnungs-Text auf die Ausgabe schreiben.
 //
-void printWarning(std::string message)
+void printWarning(const std::string& message)
 {
 #ifndef ROSSIMU
     Time t = Time::now();
@@ -91,7 +91,7 @@ void printWarning(std::string message)
     printf ("%s ", t.toString().c_str());
 #endif
     printf ("Warning: %s\n", message.c_str());
-    fflush(0);
+    fflush(nullptr);
         
     // Mutex wieder freigeben
     // pthread_mutex_unlock(&m_printMutex);
@@ -100,7 +100,7 @@ void printWarning(std::string message)
 //
 // Fehler-Text auf die Ausgabe schreiben.
 //
-void printError(std::string message)
+void printError(const std::string& message)
 {
 #ifndef ROSSIMU
     Time t = Time::now();
@@ -114,7 +114,7 @@ void printError(std::string message)
     printf("%s ", t.toString().c_str());
 #endif
     printf ("ERROR: %s\n", message.c_str());
-    fflush(0);
+    fflush(nullptr);
     
     // Mutex wieder freigeben
     // pthread_mutex_unlock(&m_printMutex);

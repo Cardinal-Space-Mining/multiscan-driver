@@ -83,7 +83,7 @@ void addFrameToBuffer(UINT8* sendBuffer, UINT8* cmdBuffer, UINT16* len);
 double getDoubleFromBuffer(UINT8* buffer, UINT16& pos);
 
 //
-UINT16 decodeUINT16(BYTE* buffer);
+UINT16 decodeUINT16(const BYTE* buffer);
 
 
 
@@ -122,7 +122,7 @@ void addIntegerToBuffer(UINT8* buffer, UINT16& pos, T intValue)
  *  Returns the requested intValue. pos points then to the first byte of the next data field.
  */
 template<typename T>
-T getIntegerFromBuffer(UINT8* buffer, UINT16& pos)
+T getIntegerFromBuffer(const UINT8* buffer, UINT16& pos)
 {
     UINT16 width = sizeof(T);
 //		UINT8* buffer2 = buffer;
@@ -150,7 +150,7 @@ T getIntegerFromBuffer(UINT8* buffer, UINT16& pos)
  * 	pos points then to the first byte of the next data field.
  */
 template<typename T>
-void addFloatToBuffer(UINT8* buffer, UINT16& pos, T floatValue)
+void addFloatToBuffer(UINT8*  /*buffer*/, UINT16& pos, T  /*floatValue*/)
 {
     UINT16 width = sizeof(T);
 

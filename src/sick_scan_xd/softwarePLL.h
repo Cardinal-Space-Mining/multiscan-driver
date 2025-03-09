@@ -29,7 +29,7 @@ public:
   {}
 
   bool pushIntoFifo(double curTimeStamp, uint32_t curtick);// update tick fifo and update clock (timestamp) fifo;
-  double extraPolateRelativeTimeStamp(uint32_t tick);
+  double extraPolateRelativeTimeStamp(uint32_t tick) const;
 
   bool getCorrectedTimeStamp(uint32_t &sec, uint32_t &nanoSec, uint32_t tick);
 
@@ -126,7 +126,7 @@ private:
   uint32_t offsetTimestampFirstSystemMicroSec = 0;
   uint32_t offsetTimestampFirstLidarTick = 0;
 
-  bool nearSameTimeStamp(double relTimeStamp1, double relTimeStamp2, double& delta_time_abs);
+  bool nearSameTimeStamp(double relTimeStamp1, double relTimeStamp2, double& delta_time_abs) const;
 
   bool updateInterpolationSlope();
 

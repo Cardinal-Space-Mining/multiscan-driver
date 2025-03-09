@@ -397,7 +397,7 @@ std::string sick_scansegment_xd::UdpReceiver::ToPrintableString(const std::vecto
     std::vector<uint8_t> payload_printable(bytes_received + 1);
     for (size_t n = 0; n < bytes_received; n++)
     {
-        if (::isprint(payload[n]))
+        if (::isprint(payload[n]) != 0)
             payload_printable[n] = payload[n];
         else
             payload_printable[n] = '.';

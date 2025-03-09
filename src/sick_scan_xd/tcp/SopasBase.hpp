@@ -102,7 +102,7 @@ public:
         ///< Error
     };
 
-    typedef void (*DecoderFunction)(SopasEventMessage& frame);	//  Decoder for events
+    using DecoderFunction = void (*)(SopasEventMessage &);	//  Decoder for events
 
     /// Default constructor.
     SopasBase();
@@ -157,7 +157,7 @@ public:
 
     void setReadOnlyMode(bool mode);
 
-    bool isReadOnly();
+    [[nodiscard]] bool isReadOnly() const;
 
     /**
         * @brief Invoke a method on the sensor.
@@ -262,13 +262,13 @@ public:
     }
 
 
-    double makeAngleValid(double angle);
+    static double makeAngleValid(double angle);
 
-    const std::string& getScannerName() const { return m_scannerName; }
-    const std::string& getScannerVersion() const { return m_scannerVersion; }
+    [[nodiscard]] const std::string& getScannerName() const { return m_scannerName; }
+    [[nodiscard]] const std::string& getScannerVersion() const { return m_scannerVersion; }
 
     // Returns a timestamp in nanoseconds of the last received tcp message (or 0 if no message received)
-    uint64_t getNanosecTimestampLastTcpMessageReceived(void);
+    uint64_t getNanosecTimestampLastTcpMessageReceived();
 
     // Convert a SOPAS error code to readable text
     static std::string convertSopasErrorCodeToText(UINT16 errorCode);
@@ -320,9 +320,9 @@ protected:
         * @param answer Pointer to answer. Will be filled if answer contains parameter.
         * @return true if no error occurred.
         */
-    bool receiveAnswer(SopasCommand cmd, std::string name, UINT32 timeout, SopasAnswer*& answer);
-    bool receiveAnswer_CoLa_A(SopasCommand cmd, std::string name, UINT32 timeout, SopasAnswer*& answer );
-    bool receiveAnswer_CoLa_B(SopasCommand cmd, std::string name, UINT32 timeout, SopasAnswer*& answer );
+    bool receiveAnswer(SopasCommand cmd, const std::string& name, UINT32 timeout, SopasAnswer*& answer);
+    bool receiveAnswer_CoLa_A(SopasCommand cmd, const std::string& name, UINT32 timeout, SopasAnswer*& answer );
+    bool receiveAnswer_CoLa_B(SopasCommand cmd, const std::string& name, UINT32 timeout, SopasAnswer*& answer );
     bool receiveAnswer(SopasCommand cmd, UINT16 index, UINT32 timeout, SopasAnswer*& answer );
     bool receiveAnswer_CoLa_A(SopasCommand cmd, UINT16 index, UINT32 timeout, SopasAnswer*& answer);
     bool receiveAnswer_CoLa_B(SopasCommand cmd, UINT16 index, UINT32 timeout, SopasAnswer*& answer);
@@ -337,27 +337,27 @@ protected:
     SopasCommand colaA_decodeCommand(std::string* rxData);
 
     /// Converts strings in sopas answer buffer to SopasCommand enum.
-    SopasCommand stringToSopasCommand(const std::string& cmdString);
-    std::string sopasCommandToString(SopasCommand cmd);
+    static SopasCommand stringToSopasCommand(const std::string& cmdString);
+    static std::string sopasCommandToString(SopasCommand cmd);
 
-protected:
+
     // Decoder functions that need to be overwritten by derived classes
     virtual void evalCaseResultDecoder(SopasEventMessage& msg) = 0;
     virtual void scanDataDecoder(SopasEventMessage& msg) = 0;
     
-    bool m_scanEventIsRegistered;
-    bool m_fieldEventIsRegistered;
-    bool m_weWantScanData; ///< Flag to enable/disable scan data reception
-    bool m_weWantFieldData; ///< Flag to enable/disable protection field data reception
+    bool m_scanEventIsRegistered{};
+    bool m_fieldEventIsRegistered{};
+    bool m_weWantScanData{}; ///< Flag to enable/disable scan data reception
+    bool m_weWantFieldData{}; ///< Flag to enable/disable protection field data reception
 
     /// Device info
     State m_state;
     std::string m_scannerName; ///< Read from scanner
     std::string m_scannerVersion; ///< Read from scanner
 
-    bool m_beVerbose; //   true = Show extended status traces
+    bool m_beVerbose{false}; //   true = Show extended status traces
 
-    bool m_isLoggedIn;
+    bool m_isLoggedIn{};
 
 private:
     // TCP
@@ -379,38 +379,38 @@ private:
     void removeFrameFromReceiveBuffer(UINT32 frameLength);
 
     // SOPAS / Cola
-    SopasProtocol m_protocol; ///< Used protocol (ColaA oder ColaB)
+    SopasProtocol m_protocol{CoLa_A}; ///< Used protocol (ColaA oder ColaB)
     SopasEncoding m_encoding; ///< ByName or ByIndex
     void colaA_decodeScannerTypeAndVersion(std::string* rxData);
     void colaB_decodeScannerTypeAndVersion(UINT8* buffer, UINT16 pos);
 
-private:
-    typedef std::map<std::string, DecoderFunction> DecoderFunctionMapByName;
-    typedef std::map<UINT16, DecoderFunction> DecoderFunctionMapByIndex;
+
+    using DecoderFunctionMapByName = std::map<std::string, DecoderFunction>;
+    using DecoderFunctionMapByIndex = std::map<UINT16, DecoderFunction>;
     DecoderFunctionMapByName m_decoderFunctionMapByName;
     DecoderFunctionMapByIndex m_decoderFunctionMapByIndex;
 
 //	DecoderFunction m_scanDecoderFunction;
 //	DecoderFunction m_evalCaseDecoderFunction;
 
-    typedef std::map<UINT16, std::string> IndexToNameMap;
+    using IndexToNameMap = std::map<UINT16, std::string>;
     IndexToNameMap m_indexToNameMap;
 
     // Response buffer
-    UINT32 m_numberOfBytesInResponseBuffer; ///< Number of bytes in buffer
-    UINT8 m_responseBuffer[1024]; ///< Receive buffer for everything except scan data and eval case data.
+    UINT32 m_numberOfBytesInResponseBuffer{}; ///< Number of bytes in buffer
+    UINT8 m_responseBuffer[1024]{}; ///< Receive buffer for everything except scan data and eval case data.
     Mutex m_receiveDataMutex; ///< Access mutex for buffer
 
     // Receive buffer
-    UINT32 m_numberOfBytesInReceiveBuffer; ///< Number of bytes in buffer
-    UINT8 m_receiveBuffer[25000]; ///< Low-Level receive buffer for all data (25000 should be enough for NAV300 Events)
+    UINT32 m_numberOfBytesInReceiveBuffer{}; ///< Number of bytes in buffer
+    UINT8 m_receiveBuffer[25000]{}; ///< Low-Level receive buffer for all data (25000 should be enough for NAV300 Events)
 
     // TCP
     Tcp m_tcp;
     std::string m_ipAddress;
-    UINT16 m_portNumber;
+    UINT16 m_portNumber{};
 
-    bool m_readOnlyMode;
+    bool m_readOnlyMode{};
 };
 
 
@@ -422,7 +422,7 @@ public:
     SopasEventMessage();
 
     /// Destructor
-    ~SopasEventMessage() {}
+    ~SopasEventMessage() = default;
 
     /**
         * @brief Constructor. This class will only store a pointer to the byte buffer. It will not deallocate the
@@ -433,30 +433,30 @@ public:
         */
     SopasEventMessage(BYTE* buffer, SopasBase::SopasProtocol protocol, UINT32 frameLength);
 
-    SopasBase::SopasProtocol getProtocolType() const
+    [[nodiscard]] SopasBase::SopasProtocol getProtocolType() const
     {
         return m_protocol;
     }
 
-    SopasBase::SopasEncoding getEncodingType() const
+    [[nodiscard]] SopasBase::SopasEncoding getEncodingType() const
     {
         return m_encoding;
     }
 
-    SopasBase::SopasMessageType getMessageType() const
+    [[nodiscard]] SopasBase::SopasMessageType getMessageType() const
     {
         return m_messageType;
     }
 
-    UINT32 size() const
+    [[nodiscard]] UINT32 size() const
     {
         return m_frameLength;
     }
 
     /// contains 's' + command string(2 byte) + content(payload length - 3)
-    UINT32 getPayLoadLength() const;
+    [[nodiscard]] UINT32 getPayLoadLength() const;
 
-    std::string getCommandString() const;
+    [[nodiscard]] std::string getCommandString() const;
 
     /// contains 's' + command string(2 byte) + content(payload length - 3)
     BYTE* getPayLoad();
@@ -467,14 +467,14 @@ public:
     /// Returns the name of a variable (answer to read variable by name). In case of error an empty value will be returned
     std::string getVariableName();
 
-    bool isValid() const { return (m_buffer != NULL); }
+    [[nodiscard]] bool isValid() const { return (m_buffer != nullptr); }
 
 private:
     void detectEncoding();
 
     void detectMessageType();
 
-private:
+
     BYTE* m_buffer;
     SopasBase::SopasProtocol m_protocol;
     UINT32 m_frameLength;
@@ -494,9 +494,9 @@ public:
 
     BYTE* getBuffer() { return m_answerBuffer; }
 
-    UINT32 size() { return m_answerLength; }
+    [[nodiscard]] UINT32 size() const { return m_answerLength; }
 
-    bool isValid() { return (m_answerBuffer != NULL); }
+    bool isValid() { return (m_answerBuffer != nullptr); }
 
 private:
     UINT32 m_answerLength;

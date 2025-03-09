@@ -5,7 +5,6 @@
 #include <cstdlib>
 #include <cstdio>
 #include <limits>
-#include <array>
 #include <tuple>
 #include <algorithm>
 #include <functional>
@@ -29,8 +28,8 @@ using std::move;
  * it may not be orderable.
  */
 struct NullStruct {
-    bool operator==(NullStruct) const { return true; }
-    bool operator<(NullStruct) const { return false; }
+    bool operator==(NullStruct /*unused*/) const { return true; }
+    bool operator<(NullStruct /*unused*/) const { return false; }
 };
 
 /* * * * * * * * * * * * * * * * * * * *
@@ -42,28 +41,28 @@ public:
     virtual bool equals(const MsgPackValue * other) const = 0;
     virtual bool less(const MsgPackValue * other) const = 0;
     virtual void dump(std::ostream& os) const = 0;
-    virtual MsgPack::Type type() const = 0;
-    virtual double number_value() const;
-    virtual float float32_value() const;
-    virtual double float64_value() const;
-    virtual int32_t int_value() const;
-    virtual int8_t int8_value() const;
-    virtual int16_t int16_value() const;
-    virtual int32_t int32_value() const;
-    virtual int64_t int64_value() const;
-    virtual uint8_t uint8_value() const;
-    virtual uint16_t uint16_value() const;
-    virtual uint32_t uint32_value() const;
-    virtual uint64_t uint64_value() const;
-    virtual bool bool_value() const;
-    virtual const std::string &string_value() const;
-    virtual const MsgPack::array &array_items() const;
-    virtual const MsgPack::binary &binary_items() const;
+    [[nodiscard]] virtual MsgPack::Type type() const = 0;
+    [[nodiscard]] virtual double number_value() const;
+    [[nodiscard]] virtual float float32_value() const;
+    [[nodiscard]] virtual double float64_value() const;
+    [[nodiscard]] virtual int32_t int_value() const;
+    [[nodiscard]] virtual int8_t int8_value() const;
+    [[nodiscard]] virtual int16_t int16_value() const;
+    [[nodiscard]] virtual int32_t int32_value() const;
+    [[nodiscard]] virtual int64_t int64_value() const;
+    [[nodiscard]] virtual uint8_t uint8_value() const;
+    [[nodiscard]] virtual uint16_t uint16_value() const;
+    [[nodiscard]] virtual uint32_t uint32_value() const;
+    [[nodiscard]] virtual uint64_t uint64_value() const;
+    [[nodiscard]] virtual bool bool_value() const;
+    [[nodiscard]] virtual const std::string &string_value() const;
+    [[nodiscard]] virtual const MsgPack::array &array_items() const;
+    [[nodiscard]] virtual const MsgPack::binary &binary_items() const;
     virtual const MsgPack &operator[](size_t i) const;
-    virtual const MsgPack::object &object_items() const;
+    [[nodiscard]] virtual const MsgPack::object &object_items() const;
     virtual const MsgPack &operator[](const std::string &key) const;
-    virtual const MsgPack::extension &extension_items() const;
-    virtual ~MsgPackValue() {}
+    [[nodiscard]] virtual const MsgPack::extension &extension_items() const;
+    virtual ~MsgPackValue() = default;
 };
 
 /* * * * * * * * * * * * * * * * * * * *
@@ -71,11 +70,11 @@ public:
  */
 
 namespace {
-static const union {
+const union {
     uint16_t dummy;
     uint8_t bytes[2];
 } endian_check_data { 0x0001 };
-static const bool is_big_endian = endian_check_data.bytes[0] == 0x00;
+const bool is_big_endian = endian_check_data.bytes[0] == 0x00;
 
 template< typename T >
 void dump_data(const T value, std::ostream& os)
@@ -83,7 +82,7 @@ void dump_data(const T value, std::ostream& os)
     union {
         T packed;
         std::array<uint8_t, sizeof(T)> bytes;
-    } converter;
+    } converter{};
     converter.packed = value;
 
     int const n = sizeof(T);
@@ -97,7 +96,7 @@ void dump_data(const T value, std::ostream& os)
     }
 }
 
-inline void dump(NullStruct, std::ostream& os) {
+inline void dump(NullStruct /*unused*/, std::ostream& os) {
     os.put(0xc0);
 }
 
@@ -385,10 +384,10 @@ protected:
 
     // Constructors
     explicit Value(const T &value) : m_value(value) {}
-    explicit Value(T &&value)      : m_value(move(value)) {}
+    explicit Value(T &&value)      : m_value(std::move(value)) {}
 
     // Get type tag
-    MsgPack::Type type() const override {
+    [[nodiscard]] MsgPack::Type type() const override {
         return tag;
     }
 
@@ -482,18 +481,18 @@ protected:
         }
     }
 
-    double  number_value()  const override { return static_cast<double>( Value<tag,T>::m_value ); }
-    float float32_value()   const override { return static_cast<float>( Value<tag,T>::m_value ); }
-    double float64_value()  const override { return static_cast<double>( Value<tag,T>::m_value ); }
-    int32_t int_value()     const override { return static_cast<int32_t>( Value<tag,T>::m_value ); }
-    int8_t int8_value()     const override { return static_cast<int8_t>( Value<tag,T>::m_value ); }
-    int16_t int16_value()   const override { return static_cast<int16_t>( Value<tag,T>::m_value ); }
-    int32_t int32_value()   const override { return static_cast<int32_t>( Value<tag,T>::m_value ); }
-    int64_t int64_value()   const override { return static_cast<int64_t>( Value<tag,T>::m_value ); }
-    uint8_t uint8_value()   const override { return static_cast<uint8_t>( Value<tag,T>::m_value ); }
-    uint16_t uint16_value() const override { return static_cast<uint16_t>( Value<tag,T>::m_value ); }
-    uint32_t uint32_value() const override { return static_cast<uint32_t>( Value<tag,T>::m_value ); }
-    uint64_t uint64_value() const override { return static_cast<uint64_t>( Value<tag,T>::m_value ); }
+    [[nodiscard]] double  number_value()  const override { return static_cast<double>( Value<tag,T>::m_value ); }
+    [[nodiscard]] float float32_value()   const override { return static_cast<float>( Value<tag,T>::m_value ); }
+    [[nodiscard]] double float64_value()  const override { return static_cast<double>( Value<tag,T>::m_value ); }
+    [[nodiscard]] int32_t int_value()     const override { return static_cast<int32_t>( Value<tag,T>::m_value ); }
+    [[nodiscard]] int8_t int8_value()     const override { return static_cast<int8_t>( Value<tag,T>::m_value ); }
+    [[nodiscard]] int16_t int16_value()   const override { return static_cast<int16_t>( Value<tag,T>::m_value ); }
+    [[nodiscard]] int32_t int32_value()   const override { return static_cast<int32_t>( Value<tag,T>::m_value ); }
+    [[nodiscard]] int64_t int64_value()   const override { return static_cast<int64_t>( Value<tag,T>::m_value ); }
+    [[nodiscard]] uint8_t uint8_value()   const override { return static_cast<uint8_t>( Value<tag,T>::m_value ); }
+    [[nodiscard]] uint16_t uint16_value() const override { return static_cast<uint16_t>( Value<tag,T>::m_value ); }
+    [[nodiscard]] uint32_t uint32_value() const override { return static_cast<uint32_t>( Value<tag,T>::m_value ); }
+    [[nodiscard]] uint64_t uint64_value() const override { return static_cast<uint64_t>( Value<tag,T>::m_value ); }
 };
 
 class MsgPackFloat final : public NumberValue<MsgPack::FLOAT32, float> {
@@ -619,46 +618,46 @@ public:
 };
 
 class MsgPackBoolean final : public Value<MsgPack::BOOL, bool> {
-    bool bool_value() const override { return m_value; }
+    [[nodiscard]] bool bool_value() const override { return m_value; }
 public:
     explicit MsgPackBoolean(bool value) : Value(value) {}
 };
 
 class MsgPackString final : public Value<MsgPack::STRING, string> {
-    const string &string_value() const override { return m_value; }
+    [[nodiscard]] const string &string_value() const override { return m_value; }
 public:
     explicit MsgPackString(const string &value) : Value(value) {}
-    explicit MsgPackString(string &&value)      : Value(move(value)) {}
+    explicit MsgPackString(string &&value)      : Value(std::move(value)) {}
 };
 
 class MsgPackArray final : public Value<MsgPack::ARRAY, MsgPack::array> {
-    const MsgPack::array &array_items() const override { return m_value; }
+    [[nodiscard]] const MsgPack::array &array_items() const override { return m_value; }
     const MsgPack & operator[](size_t i) const override;
 public:
     explicit MsgPackArray(const MsgPack::array &value) : Value(value) {}
-    explicit MsgPackArray(MsgPack::array &&value)      : Value(move(value)) {}
+    explicit MsgPackArray(MsgPack::array &&value)      : Value(std::move(value)) {}
 };
 
 class MsgPackBinary final : public Value<MsgPack::BINARY, MsgPack::binary> {
-    const MsgPack::binary &binary_items() const override { return m_value; }
+    [[nodiscard]] const MsgPack::binary &binary_items() const override { return m_value; }
 public:
     explicit MsgPackBinary(const MsgPack::binary &value) : Value(value) {}
-    explicit MsgPackBinary(MsgPack::binary &&value)      : Value(move(value)) {}
+    explicit MsgPackBinary(MsgPack::binary &&value)      : Value(std::move(value)) {}
 };
 
 class MsgPackObject final : public Value<MsgPack::OBJECT, MsgPack::object> {
-    const MsgPack::object &object_items() const override { return m_value; }
+    [[nodiscard]] const MsgPack::object &object_items() const override { return m_value; }
     const MsgPack & operator[](const string &key) const override;
 public:
     explicit MsgPackObject(const MsgPack::object &value) : Value(value) {}
-    explicit MsgPackObject(MsgPack::object &&value)      : Value(move(value)) {}
+    explicit MsgPackObject(MsgPack::object &&value)      : Value(std::move(value)) {}
 };
 
 class MsgPackExtension final : public Value<MsgPack::EXTENSION, MsgPack::extension> {
-    const MsgPack::extension &extension_items() const override { return m_value; }
+    [[nodiscard]] const MsgPack::extension &extension_items() const override { return m_value; }
 public:
     explicit MsgPackExtension(const MsgPack::extension &value) : Value(value) {}
-    explicit MsgPackExtension(MsgPack::extension &&value)      : Value(move(value)) {}
+    explicit MsgPackExtension(MsgPack::extension &&value)      : Value(std::move(value)) {}
 };
 
 class MsgPackNull final : public Value<MsgPack::NUL, NullStruct> {
@@ -678,7 +677,7 @@ struct Statics {
     const map<MsgPack, MsgPack> empty_map;
     const MsgPack::binary empty_binary;
     const MsgPack::extension empty_extension;
-    Statics() {}
+    Statics() = default;
 };
 
 static const Statics & statics() {
@@ -710,16 +709,16 @@ MsgPack::MsgPack(uint32_t value)                   : m_ptr(make_shared<MsgPackUi
 MsgPack::MsgPack(uint64_t value)                   : m_ptr(make_shared<MsgPackUint64>(value)) {}
 MsgPack::MsgPack(bool value)                       : m_ptr(value ? statics().t : statics().f) {}
 MsgPack::MsgPack(const string &value)              : m_ptr(make_shared<MsgPackString>(value)) {}
-MsgPack::MsgPack(string &&value)                   : m_ptr(make_shared<MsgPackString>(move(value))) {}
+MsgPack::MsgPack(string &&value)                   : m_ptr(make_shared<MsgPackString>(std::move(value))) {}
 MsgPack::MsgPack(const char * value)               : m_ptr(make_shared<MsgPackString>(value)) {}
 MsgPack::MsgPack(const MsgPack::array &values)     : m_ptr(make_shared<MsgPackArray>(values)) {}
-MsgPack::MsgPack(MsgPack::array &&values)          : m_ptr(make_shared<MsgPackArray>(move(values))) {}
+MsgPack::MsgPack(MsgPack::array &&values)          : m_ptr(make_shared<MsgPackArray>(std::move(values))) {}
 MsgPack::MsgPack(const MsgPack::object &values)    : m_ptr(make_shared<MsgPackObject>(values)) {}
-MsgPack::MsgPack(MsgPack::object &&values)         : m_ptr(make_shared<MsgPackObject>(move(values))) {}
+MsgPack::MsgPack(MsgPack::object &&values)         : m_ptr(make_shared<MsgPackObject>(std::move(values))) {}
 MsgPack::MsgPack(const MsgPack::binary &values)    : m_ptr(make_shared<MsgPackBinary>(values)) {}
-MsgPack::MsgPack(MsgPack::binary &&values)         : m_ptr(make_shared<MsgPackBinary>(move(values))) {}
+MsgPack::MsgPack(MsgPack::binary &&values)         : m_ptr(make_shared<MsgPackBinary>(std::move(values))) {}
 MsgPack::MsgPack(const MsgPack::extension &values) : m_ptr(make_shared<MsgPackExtension>(values)) {}
-MsgPack::MsgPack(MsgPack::extension &&values)      : m_ptr(make_shared<MsgPackExtension>(move(values))) {}
+MsgPack::MsgPack(MsgPack::extension &&values)      : m_ptr(make_shared<MsgPackExtension>(std::move(values))) {}
 
 /* * * * * * * * * * * * * * * * * * * *
  * Accessors
@@ -765,8 +764,8 @@ const vector<MsgPack> &       MsgPackValue::array_items()               const { 
 const map<MsgPack, MsgPack> & MsgPackValue::object_items()              const { return statics().empty_map; }
 const MsgPack::binary & MsgPackValue::binary_items()                    const { return statics().empty_binary; }
 const MsgPack::extension & MsgPackValue::extension_items()              const { return statics().empty_extension; }
-const MsgPack &               MsgPackValue::operator[] (size_t)         const { return static_null(); }
-const MsgPack &               MsgPackValue::operator[] (const string &) const { return static_null(); }
+const MsgPack &               MsgPackValue::operator[] (size_t /*unused*/)         const { return static_null(); }
+const MsgPack &               MsgPackValue::operator[] (const string & /*unused*/) const { return static_null(); }
 
 const MsgPack & MsgPackObject::operator[] (const string &key) const {
     auto iter = m_value.find(key);
@@ -800,7 +799,7 @@ namespace MsgPackParser {
     template< typename T >
     void read_bytes(std::istream& is, T& bytes)
     {
-        static_assert(std::is_fundamental<T>::value,
+        static_assert(std::is_fundamental_v<T>,
             "byte read not guaranteed for non-primitive types");
         int n = sizeof(T);
         
@@ -828,23 +827,23 @@ namespace MsgPackParser {
      */
     MsgPack fail(std::istream& is) {
         is.setstate(std::ios::failbit);
-        return MsgPack();
+        return {};
     }
 
-    MsgPack parse_invalid(std::istream& is, uint8_t, int) {
+    MsgPack parse_invalid(std::istream& is, uint8_t /*unused*/, int /*unused*/) {
         return fail(is);
     }
 
-    MsgPack parse_nil(std::istream&, uint8_t, int) {
-        return MsgPack();
+    MsgPack parse_nil(std::istream& /*unused*/, uint8_t /*unused*/, int /*unused*/) {
+        return {};
     }
 
-    MsgPack parse_bool(std::istream&, uint8_t first_byte, int) {
-        return MsgPack(first_byte == 0xc3);
+    MsgPack parse_bool(std::istream& /*unused*/, uint8_t first_byte, int /*unused*/) {
+        return {first_byte == 0xc3};
     }
 
     template< typename T >
-    MsgPack parse_arith(std::istream& is, uint8_t, int) {
+    MsgPack parse_arith(std::istream& is, uint8_t /*unused*/, int /*unused*/) {
         T tmp;
         read_bytes(is, tmp);
         return MsgPack(tmp);
@@ -853,12 +852,12 @@ namespace MsgPackParser {
     inline  std::string parse_string_impl(std::istream& is, uint32_t bytes) {
         std::string ret;
         ret.resize(bytes);
-        is.read(&ret[0], bytes);
+        is.read(ret.data(), bytes);
         return ret;
     }
 
     template< typename T >
-    MsgPack parse_string(std::istream& is, uint8_t, int) {
+    MsgPack parse_string(std::istream& is, uint8_t /*unused*/, int /*unused*/) {
         T bytes;
         read_bytes(is, bytes);
         return MsgPack(parse_string_impl(is, static_cast<uint32_t>(bytes)));
@@ -875,7 +874,7 @@ namespace MsgPackParser {
     }
 
     template< typename T >
-    MsgPack parse_array(std::istream& is, uint8_t, int depth) {
+    MsgPack parse_array(std::istream& is, uint8_t /*unused*/, int depth) {
         T bytes;
         read_bytes(is, bytes);
         return MsgPack(parse_array_impl(is, static_cast<uint32_t>(bytes), depth));
@@ -893,7 +892,7 @@ namespace MsgPackParser {
     }
 
     template< typename T >
-    MsgPack parse_object(std::istream& is, uint8_t, int depth) {
+    MsgPack parse_object(std::istream& is, uint8_t /*unused*/, int depth) {
         T bytes;
         read_bytes(is, bytes);
         return MsgPack(parse_object_impl(is, static_cast<uint32_t>(bytes), depth));
@@ -907,24 +906,24 @@ namespace MsgPackParser {
     }
 
     template< typename T >
-    MsgPack parse_binary(std::istream& is, uint8_t, int) {
+    MsgPack parse_binary(std::istream& is, uint8_t /*unused*/, int /*unused*/) {
         T bytes;
         read_bytes(is, bytes);
         return MsgPack(parse_binary_impl(is, static_cast<uint32_t>(bytes)));
     }
 
     template< typename T >
-    MsgPack parse_extension(std::istream& is, uint8_t, int) {
+    MsgPack parse_extension(std::istream& is, uint8_t /*unused*/, int /*unused*/) {
         T bytes;
         read_bytes(is, bytes);
-        uint8_t type;
+        uint8_t type = 0;
         read_bytes(is, type);
         const MsgPack::binary data =  parse_binary_impl(is, static_cast<uint32_t>(bytes));
-        return MsgPack(std::make_tuple(type, std::move(data)));
+        return MsgPack(std::make_tuple(type, data));
     }
 
-    MsgPack parse_pos_fixint(std::istream&, uint8_t first_byte, int) {
-        return MsgPack( first_byte );
+    MsgPack parse_pos_fixint(std::istream& /*unused*/, uint8_t first_byte, int /*unused*/) {
+        return { first_byte };
     }
 
     MsgPack parse_fixobject(std::istream& is, uint8_t first_byte, int depth) {
@@ -937,21 +936,21 @@ namespace MsgPackParser {
         return MsgPack(parse_array_impl(is, bytes, depth));
     }
 
-    MsgPack parse_fixstring(std::istream& is, uint8_t first_byte, int) {
+    MsgPack parse_fixstring(std::istream& is, uint8_t first_byte, int /*unused*/) {
         uint32_t const bytes = first_byte & 0x1f;
         return MsgPack(parse_string_impl(is, bytes));
     }
 
-    MsgPack parse_neg_fixint(std::istream&, uint8_t first_byte, int) {
-        return MsgPack(*reinterpret_cast<int8_t*>(&first_byte));
+    MsgPack parse_neg_fixint(std::istream& /*unused*/, uint8_t first_byte, int /*unused*/) {
+        return {*reinterpret_cast<int8_t*>(&first_byte)};
     }
 
-    MsgPack parse_fixext(std::istream& is, uint8_t first_byte, int) {
-        uint8_t type;
+    MsgPack parse_fixext(std::istream& is, uint8_t first_byte, int /*unused*/) {
+        uint8_t type = 0;
         read_bytes(is, type);
         uint32_t const BYTES = 1 << (first_byte - 0xd4u);
         const MsgPack::binary data = parse_binary_impl(is, BYTES);
-        return MsgPack(std::make_tuple(type, std::move(data)));
+        return MsgPack(std::make_tuple(type, data));
     }
 
     /* parse_msgpack()
@@ -996,7 +995,7 @@ namespace MsgPackParser {
                 parser_template_element_type{ 0xffu, &MsgPackParser::parse_neg_fixint}
             }};
 
-            std::array< MsgPack(*)(std::istream&, uint8_t, int), 256 > parsers;
+            std::array< MsgPack(*)(std::istream&, uint8_t, int), 256 > parsers{};
             int i = 0;
             std::for_each(std::begin(parser_template),
                          std::end(parser_template),
@@ -1086,7 +1085,7 @@ bool MsgPack::has_shape(const shape & types, string & err) const {
         return false;
     }
 
-    for (auto & item : types) {
+    for (const auto & item : types) {
         if ((*this)[item.first].type() != item.second) {
             err = "bad type for " + item.first;
             return false;

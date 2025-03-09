@@ -146,42 +146,44 @@ int sick_scansegment_xd::MsgPackParser::telegramCount = 0;
 /*
  * @brief Define msgpack keys by precompiler define (faster than calling sick_scansegment_xd::MsgpackKeyToInt)
  */
-#define MsgpackKeyToInt_class             0x10 // sick_scansegment_xd::MsgpackKeyToInt("class")
-#define MsgpackKeyToInt_data              0x11 // sick_scansegment_xd::MsgpackKeyToInt("data")
-#define MsgpackKeyToInt_numOfElems        0x12 // sick_scansegment_xd::MsgpackKeyToInt("numOfElems")
-#define MsgpackKeyToInt_elemSz            0x13 // sick_scansegment_xd::MsgpackKeyToInt("elemSz")
-#define MsgpackKeyToInt_endian            0x14 // sick_scansegment_xd::MsgpackKeyToInt("endian")
-#define MsgpackKeyToInt_elemTypes         0x15 // sick_scansegment_xd::MsgpackKeyToInt("elemTypes")
-#define MsgpackKeyToInt_little            0x30 // sick_scansegment_xd::MsgpackKeyToInt("little")
-#define MsgpackKeyToInt_float32           0x31 // sick_scansegment_xd::MsgpackKeyToInt("float32")
-#define MsgpackKeyToInt_uint32            0x32 // sick_scansegment_xd::MsgpackKeyToInt("uint32")
-#define MsgpackKeyToInt_uint8             0x33 // sick_scansegment_xd::MsgpackKeyToInt("uint8")
-#define MsgpackKeyToInt_uint16            0x34 // sick_scansegment_xd::MsgpackKeyToInt("uint16")
-#define MsgpackKeyToInt_ChannelTheta      0x50 // sick_scansegment_xd::MsgpackKeyToInt("ChannelTheta")
-#define MsgpackKeyToInt_ChannelPhi        0x51 // sick_scansegment_xd::MsgpackKeyToInt("ChannelPhi")
-#define MsgpackKeyToInt_DistValues        0x52 // sick_scansegment_xd::MsgpackKeyToInt("DistValues")
-#define MsgpackKeyToInt_RssiValues        0x53 // sick_scansegment_xd::MsgpackKeyToInt("RssiValues")
-#define MsgpackKeyToInt_PropertiesValues  0x54 // sick_scansegment_xd::MsgpackKeyToInt("PropertiesValues")
-#define MsgpackKeyToInt_Scan              0x70 // sick_scansegment_xd::MsgpackKeyToInt("Scan")
-#define MsgpackKeyToInt_TimestampStart    0x71 // sick_scansegment_xd::MsgpackKeyToInt("TimestampStart")
-#define MsgpackKeyToInt_TimestampStop     0x72 // sick_scansegment_xd::MsgpackKeyToInt("TimestampStop")
-#define MsgpackKeyToInt_ThetaStart        0x73 // sick_scansegment_xd::MsgpackKeyToInt("ThetaStart")
-#define MsgpackKeyToInt_ThetaStop         0x74 // sick_scansegment_xd::MsgpackKeyToInt("ThetaStop")
-#define MsgpackKeyToInt_ScanNumber        0x75 // sick_scansegment_xd::MsgpackKeyToInt("ScanNumber")
-#define MsgpackKeyToInt_ModuleId          0x76 // sick_scansegment_xd::MsgpackKeyToInt("ModuleId")
-#define MsgpackKeyToInt_BeamCount         0x77 // sick_scansegment_xd::MsgpackKeyToInt("BeamCount")
-#define MsgpackKeyToInt_EchoCount         0x78 // sick_scansegment_xd::MsgpackKeyToInt("EchoCount")
-#define MsgpackKeyToInt_ScanSegment       0x90 // sick_scansegment_xd::MsgpackKeyToInt("ScanSegment")
-#define MsgpackKeyToInt_SegmentCounter    0x91 // sick_scansegment_xd::MsgpackKeyToInt("SegmentCounter")
-#define MsgpackKeyToInt_FrameNumber       0x92 // sick_scansegment_xd::MsgpackKeyToInt("FrameNumber")
-#define MsgpackKeyToInt_Availability      0x93 // sick_scansegment_xd::MsgpackKeyToInt("Availability")
-#define MsgpackKeyToInt_SenderId          0x94 // sick_scansegment_xd::MsgpackKeyToInt("SenderId")
-#define MsgpackKeyToInt_SegmentSize       0x95 // sick_scansegment_xd::MsgpackKeyToInt("SegmentSize")
-#define MsgpackKeyToInt_SegmentData       0x96 // sick_scansegment_xd::MsgpackKeyToInt("SegmentData")
-#define MsgpackKeyToInt_LayerId           0xA0 // sick_scansegment_xd::MsgpackKeyToInt("LayerId")
-#define MsgpackKeyToInt_TelegramCounter   0xB0 // sick_scansegment_xd::MsgpackKeyToInt("TelegramCounter")
-#define MsgpackKeyToInt_TimestampTransmit 0xB1 // sick_scansegment_xd::MsgpackKeyToInt("TimestampTransmit")
-#define MsgpackKeyToInt_MaxValue          0xB2 // max allowed value of a msgpack key
+enum {
+MsgpackKeyToInt_class =             0x10, // sick_scansegment_xd::MsgpackKeyToInt("class")
+MsgpackKeyToInt_data =              0x11, // sick_scansegment_xd::MsgpackKeyToInt("data")
+MsgpackKeyToInt_numOfElems =        0x12, // sick_scansegment_xd::MsgpackKeyToInt("numOfElems")
+MsgpackKeyToInt_elemSz =            0x13, // sick_scansegment_xd::MsgpackKeyToInt("elemSz")
+MsgpackKeyToInt_endian =            0x14, // sick_scansegment_xd::MsgpackKeyToInt("endian")
+MsgpackKeyToInt_elemTypes =         0x15, // sick_scansegment_xd::MsgpackKeyToInt("elemTypes")
+MsgpackKeyToInt_little =            0x30, // sick_scansegment_xd::MsgpackKeyToInt("little")
+MsgpackKeyToInt_float32 =           0x31, // sick_scansegment_xd::MsgpackKeyToInt("float32")
+MsgpackKeyToInt_uint32 =            0x32, // sick_scansegment_xd::MsgpackKeyToInt("uint32")
+MsgpackKeyToInt_uint8 =             0x33, // sick_scansegment_xd::MsgpackKeyToInt("uint8")
+MsgpackKeyToInt_uint16 =            0x34, // sick_scansegment_xd::MsgpackKeyToInt("uint16")
+MsgpackKeyToInt_ChannelTheta =      0x50, // sick_scansegment_xd::MsgpackKeyToInt("ChannelTheta")
+MsgpackKeyToInt_ChannelPhi =        0x51, // sick_scansegment_xd::MsgpackKeyToInt("ChannelPhi")
+MsgpackKeyToInt_DistValues =        0x52, // sick_scansegment_xd::MsgpackKeyToInt("DistValues")
+MsgpackKeyToInt_RssiValues =        0x53, // sick_scansegment_xd::MsgpackKeyToInt("RssiValues")
+MsgpackKeyToInt_PropertiesValues =  0x54, // sick_scansegment_xd::MsgpackKeyToInt("PropertiesValues")
+MsgpackKeyToInt_Scan =              0x70, // sick_scansegment_xd::MsgpackKeyToInt("Scan")
+MsgpackKeyToInt_TimestampStart =    0x71, // sick_scansegment_xd::MsgpackKeyToInt("TimestampStart")
+MsgpackKeyToInt_TimestampStop =     0x72, // sick_scansegment_xd::MsgpackKeyToInt("TimestampStop")
+MsgpackKeyToInt_ThetaStart =        0x73, // sick_scansegment_xd::MsgpackKeyToInt("ThetaStart")
+MsgpackKeyToInt_ThetaStop =         0x74, // sick_scansegment_xd::MsgpackKeyToInt("ThetaStop")
+MsgpackKeyToInt_ScanNumber =        0x75, // sick_scansegment_xd::MsgpackKeyToInt("ScanNumber")
+MsgpackKeyToInt_ModuleId =          0x76, // sick_scansegment_xd::MsgpackKeyToInt("ModuleId")
+MsgpackKeyToInt_BeamCount =         0x77, // sick_scansegment_xd::MsgpackKeyToInt("BeamCount")
+MsgpackKeyToInt_EchoCount =         0x78, // sick_scansegment_xd::MsgpackKeyToInt("EchoCount")
+MsgpackKeyToInt_ScanSegment =       0x90, // sick_scansegment_xd::MsgpackKeyToInt("ScanSegment")
+MsgpackKeyToInt_SegmentCounter =    0x91, // sick_scansegment_xd::MsgpackKeyToInt("SegmentCounter")
+MsgpackKeyToInt_FrameNumber =       0x92, // sick_scansegment_xd::MsgpackKeyToInt("FrameNumber")
+MsgpackKeyToInt_Availability =      0x93, // sick_scansegment_xd::MsgpackKeyToInt("Availability")
+MsgpackKeyToInt_SenderId =          0x94, // sick_scansegment_xd::MsgpackKeyToInt("SenderId")
+MsgpackKeyToInt_SegmentSize =       0x95, // sick_scansegment_xd::MsgpackKeyToInt("SegmentSize")
+MsgpackKeyToInt_SegmentData =       0x96, // sick_scansegment_xd::MsgpackKeyToInt("SegmentData")
+MsgpackKeyToInt_LayerId =           0xA0, // sick_scansegment_xd::MsgpackKeyToInt("LayerId")
+MsgpackKeyToInt_TelegramCounter =   0xB0, // sick_scansegment_xd::MsgpackKeyToInt("TelegramCounter")
+MsgpackKeyToInt_TimestampTransmit = 0xB1, // sick_scansegment_xd::MsgpackKeyToInt("TimestampTransmit")
+MsgpackKeyToInt_MaxValue =          0xB2 // max allowed value of a msgpack key
+};
 
 /*
  * @brief static defined key values of type msgpack11::MsgPack, avoids new and delete for each call to msgpack11::MsgPack::object::find()
@@ -291,20 +293,20 @@ static std::string printMsgPack(const msgpack11::MsgPack& msg)
 class MsgPackElement
 {
 public:
-	MsgPackElement() {}
-	MsgPackElement(const msgpack11::MsgPack::object& object_items)
+	MsgPackElement() = default;
+	explicit MsgPackElement(const msgpack11::MsgPack::object& object_items)
 	{
 		data = &object_items.find(s_msgpack_keys.values[MsgpackKeyToInt_data])->second;
 		elemSz = &object_items.find(s_msgpack_keys.values[MsgpackKeyToInt_elemSz])->second;
 		endian = &object_items.find(s_msgpack_keys.values[MsgpackKeyToInt_endian])->second;
 		elemTypes = &object_items.find(s_msgpack_keys.values[MsgpackKeyToInt_elemTypes])->second;
 		if (elemTypes->is_array())
-			elemTypes = &elemTypes->array_items()[0];
+			elemTypes = elemTypes->array_items().data();
 	}
-	const msgpack11::MsgPack* data;
-	const msgpack11::MsgPack* elemSz;
-	const msgpack11::MsgPack* elemTypes;
-	const msgpack11::MsgPack* endian;
+	const msgpack11::MsgPack* data{};
+	const msgpack11::MsgPack* elemSz{};
+	const msgpack11::MsgPack* elemTypes{};
+	const msgpack11::MsgPack* endian{};
 };
 
 /*
@@ -313,7 +315,7 @@ public:
 class MsgPackToFloat32VectorConverter
 {
 public:
-	MsgPackToFloat32VectorConverter() {}
+	MsgPackToFloat32VectorConverter() = default;
 	MsgPackToFloat32VectorConverter(const MsgPackElement& msgpack, bool dstIsBigEndian)
 	{
 		union FLOAT_4BYTE_UNION
@@ -343,7 +345,7 @@ public:
 		m_data.reserve(binary_size / elem_size);
 		if (msgpack.elemSz->int_value() == 4 && msgpack.elemTypes->int_value() == MsgpackKeyToInt_float32) // Decode 4 bytes as float
 		{
-			FLOAT_4BYTE_UNION elem_buffer;
+			FLOAT_4BYTE_UNION elem_buffer{};
 			if (srcIsBigEndian == dstIsBigEndian) // src and dst have identical endianess: reinterprete 4 bytes as float
 			{
 				for (int n = 0; n < binary_size; n += 4)
@@ -366,7 +368,7 @@ public:
 		}
 		else if (msgpack.elemSz->int_value() == 2 && msgpack.elemTypes->int_value() == MsgpackKeyToInt_uint16) // Decode 2 bytes as uint16 and convert to float
 		{
-			UINT_2BYTE_UNION elem_buffer;
+			UINT_2BYTE_UNION elem_buffer{};
 			if (srcIsBigEndian == dstIsBigEndian) // src and dst have identical endianess: reinterprete 2 bytes as uint16 and convert to float
 			{
 				for (int n = 0; n < binary_size; n += 2)
@@ -387,14 +389,14 @@ public:
 		}
 		else
 		{
-			std::cerr << "## ERROR MsgPackToFloat32VectorConverter: invalid or unsupported elemSz or elemTypes:" << std::endl
-				<< "    msgpack.data = " << (msgpack.data ? printMsgPack(*msgpack.data) : "NULL") << std::endl
-				<< "    msgpack.elemSz = " << (msgpack.elemSz ? printMsgPack(*msgpack.elemSz) : "NULL") << std::endl
-				<< "    msgpack.elemTypes = " << (msgpack.elemTypes ? printMsgPack(*msgpack.elemTypes) : "NULL") << std::endl
-				<< "    msgpack.endian = " << (msgpack.endian ? printMsgPack(*msgpack.endian) : "NULL") << std::endl;
+			std::cerr << "## ERROR MsgPackToFloat32VectorConverter: invalid or unsupported elemSz or elemTypes:" << '\n'
+				<< "    msgpack.data = " << ((msgpack.data != nullptr) ? printMsgPack(*msgpack.data) : "NULL") << '\n'
+				<< "    msgpack.elemSz = " << ((msgpack.elemSz != nullptr) ? printMsgPack(*msgpack.elemSz) : "NULL") << '\n'
+				<< "    msgpack.elemTypes = " << ((msgpack.elemTypes != nullptr) ? printMsgPack(*msgpack.elemTypes) : "NULL") << '\n'
+				<< "    msgpack.endian = " << ((msgpack.endian != nullptr) ? printMsgPack(*msgpack.endian) : "NULL") << '\n';
 		}
 	}
-	std::string print(void)
+	std::string print()
 	{
 		std::stringstream s;
 		if (!m_data.empty())
@@ -405,8 +407,8 @@ public:
 		}
 		return s.str();
 	}
-    float rad2deg(float angle) const { return angle * (float)(180.0 / M_PI); }
-	std::string printRad2Deg(void)
+    [[nodiscard]] static float rad2deg(float angle) { return angle * (float)(180.0 / M_PI); }
+	std::string printRad2Deg()
 	{
 		std::stringstream s;
 		if (!m_data.empty())
@@ -417,7 +419,7 @@ public:
 		}
 		return s.str();
 	}
-	std::vector<float>& data(void)
+	std::vector<float>& data()
 	{
 		return m_data;
 	}
@@ -435,7 +437,7 @@ std::vector<uint8_t> sick_scansegment_xd::MsgPackParser::ReadFile(const std::str
 	std::ifstream file_istream(filepath, std::ios::binary);
 	if (file_istream.is_open())
 	    return std::vector<uint8_t>((std::istreambuf_iterator<char>(file_istream)), std::istreambuf_iterator<char>());
-	return std::vector<uint8_t>();
+	return {};
 }
 
 /*
@@ -451,7 +453,7 @@ std::string sick_scansegment_xd::MsgPackParser::MsgpackToHexDump(const std::vect
 		if(pretty_print)
 		{
 			if ((n % 20) == 19)
-				msgpack_hexdump << std::endl;
+				msgpack_hexdump << '\n';
 			else
 				msgpack_hexdump << " ";
 		}
@@ -694,7 +696,7 @@ bool sick_scansegment_xd::MsgPackParser::Parse(std::istream& msgpack_istream, fi
                 {
                     const MsgPackElement& propertyMsgPackElement = MsgPackElement(propertiesMsg->second.array_items()[n].object_items());
                     propertyValues[n] = std::vector<uint8_t>(propertyMsgPackElement.data->binary_items().size(), 0);
-                    if (propertyMsgPackElement.elemSz->int_value() == 1 && propertyMsgPackElement.elemTypes->int_value() == MsgpackKeyToInt_uint8 && propertyMsgPackElement.data->binary_items().size() > 0)
+                    if (propertyMsgPackElement.elemSz->int_value() == 1 && propertyMsgPackElement.elemTypes->int_value() == MsgpackKeyToInt_uint8 && !propertyMsgPackElement.data->binary_items().empty())
                     {
                         for(size_t m = 0; m < propertyValues[n].size(); m++)
                         {
@@ -729,7 +731,7 @@ bool sick_scansegment_xd::MsgPackParser::Parse(std::istream& msgpack_istream, fi
             }
 
             // Convert to cartesian coordinates
-            result.scandata.push_back(sick_scansegment_xd::ScanSegmentParserOutput::Scangroup());
+            result.scandata.emplace_back();
             result.scandata.back().timestampStart_sec = u32TimestampStart_sec;
             result.scandata.back().timestampStart_nsec = u32TimestampStart_nsec;
             result.scandata.back().timestampStop_sec = u32TimestampStop_sec;
@@ -756,15 +758,15 @@ bool sick_scansegment_xd::MsgPackParser::Parse(std::istream& msgpack_istream, fi
             for (int echoIdx = 0; echoIdx < iEchoCount; echoIdx++)
             {
                 assert(iPointCount == channelTheta.data().size() && iPointCount == distValues[echoIdx].data().size() && iPointCount == rssiValues[echoIdx].data().size());
-                groupData.push_back(sick_scansegment_xd::ScanSegmentParserOutput::Scanline());
+                groupData.emplace_back();
                 sick_scansegment_xd::ScanSegmentParserOutput::Scanline& scanline = groupData.back();
                 scanline.points.reserve(iPointCount);
                 for (int pointIdx = 0; pointIdx < iPointCount; pointIdx++)
                 {
                     uint8_t reflectorbit = 0;
-                    for (size_t n = 0; n < propertyValues.size(); n++)
-                        if (static_cast<size_t>(pointIdx) < propertyValues[n].size())
-                        reflectorbit |= ((propertyValues[n][pointIdx]) & 0x01); // reflector bit is set, if a reflector is detected on any number of echos
+                    for (auto & propertyValue : propertyValues)
+                        if (static_cast<size_t>(pointIdx) < propertyValue.size())
+                        reflectorbit |= ((propertyValue[pointIdx]) & 0x01); // reflector bit is set, if a reflector is detected on any number of echos
                     float dist = 0.001f * distValues[echoIdx].data()[pointIdx]; // convert distance to meter
                     float intensity = rssiValues[echoIdx].data()[pointIdx];
                     float x = dist * cos_azimuth[pointIdx] * cos_elevation;
@@ -773,7 +775,7 @@ bool sick_scansegment_xd::MsgPackParser::Parse(std::istream& msgpack_istream, fi
                     float azimuth = channelTheta.data()[pointIdx];
                     // float azimuth_norm = normalizeAngle(azimuth);
                     uint64_t lidar_timestamp_microsec = lut_lidar_timestamp_microsec[pointIdx];
-                    scanline.points.push_back(sick_scansegment_xd::ScanSegmentParserOutput::LidarPoint(x, y, z, intensity, dist, azimuth, elevation, groupIdx, echoIdx, pointIdx, lidar_timestamp_microsec, reflectorbit));
+                    scanline.points.emplace_back(x, y, z, intensity, dist, azimuth, elevation, groupIdx, echoIdx, pointIdx, lidar_timestamp_microsec, reflectorbit);
                 }
             }
         }

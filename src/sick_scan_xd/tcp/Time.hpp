@@ -13,7 +13,7 @@
 #else
 #include <sys/time.h>
 #endif
-#include <time.h>
+#include <ctime>
 
 #include "BasicDatatypes.hpp"
 
@@ -23,13 +23,13 @@ class TimeDuration
 {
 public:
 	TimeDuration();
-	TimeDuration(double seconds) { m_duration = seconds; }
+	explicit TimeDuration(double seconds) : m_duration(seconds) { }
 	
 	void set(double seconds) { m_duration = seconds; }
-	inline UINT32 total_milliseconds();
+	[[nodiscard]] inline UINT32 total_milliseconds() const;
 	inline TimeDuration& operator=(const double& seconds);
 	
-	double m_duration;	// Zeit, in [s]
+	double m_duration{0.0};	// Zeit, in [s]
 };
 
 // Fuer td = x;
@@ -40,7 +40,7 @@ inline TimeDuration& TimeDuration::operator=(const double& seconds)
 }
 
 // Zeitspanne als [ms]
-inline UINT32 TimeDuration::total_milliseconds()
+inline UINT32 TimeDuration::total_milliseconds() const
 {
 	UINT32 ms = (UINT32)((m_duration * 1000.0) + 0.5);
 	return ms;
@@ -51,15 +51,15 @@ class Time
 {
 public:
 	Time();
-	Time(timeval time);
-	~Time();
+	explicit Time(timeval time);
+	~Time() = default;
 	
 	void set(double time);
 	void set(timeval time);
 	void set(UINT64 ntpSeconds, UINT32 ntpFractionalSeconds);
 	void set(UINT64 ntpTime);
-	double seconds();
-	UINT32 total_milliseconds();
+	[[nodiscard]] double seconds() const;
+	[[nodiscard]] UINT32 total_milliseconds() const;
 	
 	static Time now();	// Returns the current time
 	
@@ -72,13 +72,13 @@ public:
 	bool operator<(const Time& other) const;
 	bool operator==(const Time& other) const;
 	
-	std::string toString() const;
-	std::string toLongString() const;
+	[[nodiscard]] std::string toString() const;
+	[[nodiscard]] std::string toLongString() const;
 
 	static const UINT64 secondsFrom1900to1970;
 	
 private:
-	timeval m_time;	// Zeit, in [s]
+	timeval m_time{};	// Zeit, in [s]
 
 	static const double m_secondFractionNTPtoNanoseconds; // = 2^-32 * 1e9
 	static const double m_nanosecondsToSecondFractionNTP;   // = 2^32 * 1e-9

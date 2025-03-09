@@ -12,7 +12,7 @@
 #include <cstring>
 #include <cassert>
 #include <stdexcept>
-#include <stdlib.h>
+#include <cstdlib>
 #include <limits>
 
 #include "colab.hpp"
@@ -63,8 +63,8 @@ std::string getCommandStringFromBuffer(UINT8* buffer)
 
 std::string getIdentifierFromBuffer(UINT8* buffer, UINT16& nextData, UINT16 bufferLength)
 {
-	UINT16 start;
-	UINT16 length;
+	UINT16 start = 0;
+	UINT16 length = 0;
 
 	if (buffer[11] == 0x20)
 	{
@@ -142,7 +142,7 @@ double getDoubleFromBuffer(UINT8* buffer, UINT16& pos)
 }
 
 
-UINT16 decodeUINT16(BYTE* buffer)
+UINT16 decodeUINT16(const BYTE* buffer)
 {
 	UINT16 value = (((UINT16)buffer[0]) << 8) +
 					((UINT16)buffer[1]);

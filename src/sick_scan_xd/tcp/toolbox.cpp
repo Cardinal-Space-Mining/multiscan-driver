@@ -2,15 +2,15 @@
  * Toolbox. Some useful functions.
  *
  */
-#include <stdio.h>      /* for printf() and fprintf() */
+#include <cstdio>      /* for printf() and fprintf() */
 #ifdef _MSC_VER
 #include <winsock2.h>
 #else
 #include <sys/socket.h> /* for socket(), bind(), and connect() */
 #include <arpa/inet.h>  /* for sockaddr_in and inet_ntoa() */
 #endif
-#include <stdlib.h>     /* for atoi() and exit() */
-#include <string.h>     /* for memset() */
+#include <cstdlib>     /* for atoi() and exit() */
+#include <cstring>     /* for memset() */
 #include "toolbox.hpp"
 #include <iostream>
 #include <iomanip>		// for std::setprecision
@@ -112,8 +112,8 @@ std::string toHexString(UINT8 val)
 std::string toLower(const std::string& text)
 {
 	std::string low;
-	UINT32 i;
-	unsigned char c;
+	UINT32 i = 0;
+	unsigned char c = 0;
 	for (i=0; i < text.length(); i++)
 	{
 		c = text.at(i);
@@ -168,7 +168,7 @@ std::string convertMeterToFeetAndInch(double m)
 //
 UINT16 fromString(const std::string& text)
 {
-	int value;
+	int value = 0;
 	int conversions = sscanf(text.c_str(), "%d", &value);
 	if (conversions == 1)
 	{
@@ -207,7 +207,7 @@ int hexCharToValue(char c)
  */
 char convertNibbleToHexChar(int value, bool useLowerCaseLetters)
 {
-	char c;
+	char c = 0;
 	
 	if (value < 10)
 	{
@@ -215,7 +215,7 @@ char convertNibbleToHexChar(int value, bool useLowerCaseLetters)
 	}
 	else
 	{
-		if (useLowerCaseLetters == false)
+		if (!useLowerCaseLetters)
 		{
 			// Grossbuchstaben
 			c = 'A' + value - 10;
@@ -373,7 +373,7 @@ std::string toString(double val, int digits_after_decimal_point)
 //
 // Beispiel: "192.168.0.1:1234" -> 0x0100A8C0
 //
-void stringToIpTarget(std::string ipAdrStr, UINT32& ipAddress, UINT16& port)
+void stringToIpTarget(const std::string& ipAdrStr, UINT32& ipAddress, UINT16& port)
 {
 	std::string addrStr;
 	std::string portStr;
@@ -404,7 +404,7 @@ void stringToIpTarget(std::string ipAdrStr, UINT32& ipAddress, UINT16& port)
 	ipAddress = adrVal;
 	
 	// Port
-	if (portStr.length() > 0)
+	if (!portStr.empty())
 	{
 		portVal = fromString(portStr);
 		port = portVal;
@@ -422,7 +422,7 @@ std::string ipTargetToString(UINT32 ipAddress, UINT16 port)
 	
 	// Port
 	addr += ":";
-	addr += toString((UINT16)port);
+	addr += toString(port);
 	
 	return addr;
 }
@@ -533,7 +533,7 @@ union FloatInt
 //
 float memread_float(BYTE*& buffer)
 {
-	FloatInt floatint;
+	FloatInt floatint{};
 	floatint.value_int = memread_UINT32(buffer);
 	return floatint.value_float;
 }
@@ -544,7 +544,7 @@ float memread_float(BYTE*& buffer)
 //
 void memwrite_float(BYTE*& buffer, float value)
 {
-	FloatInt floatint;
+	FloatInt floatint{};
 	floatint.value_float = value;
 	memwrite_UINT32(buffer, floatint.value_int);
 }
@@ -612,7 +612,7 @@ void memwrite_INT8(BYTE*& buffer, INT8 value)
 //
 // Write a string to a buffer, and advance the buffer pointer.
 //
-void memwrite_string(BYTE*& buffer, std::string text)
+void memwrite_string(BYTE*& buffer, const std::string& text)
 {
 	strncpy((char*)buffer, text.c_str(), text.length());
 	buffer += text.length();

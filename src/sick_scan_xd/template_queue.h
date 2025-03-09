@@ -5,7 +5,9 @@
 #include <thread>
 #include <iostream>
 #include <mutex>
+#include <list>
 #include <condition_variable>
+#include <cstring>
 
 
 template<typename T>

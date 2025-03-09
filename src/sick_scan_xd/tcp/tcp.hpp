@@ -36,10 +36,10 @@ public:
 	~Tcp();
 
 	// Opens the connection.
-	bool open(std::string ipAddress, UINT16 port, bool enableVerboseDebugOutput = false);
+	bool open(const std::string& ipAddress, UINT16 port, bool enableVerboseDebugOutput = false);
 	bool open(UINT32 ipAddress, UINT16 port, bool enableVerboseDebugOutput = false);
 	void close();											// Closes the connection, if it was open.
-	bool isOpen();	// "True" if a connection is currently open.
+	[[nodiscard]] bool isOpen() const;	// "True" if a connection is currently open.
 	bool write(UINT8* buffer, UINT32 numberOfBytes);		// Writes numberOfBytes bytes to the open connection.
 	std::string readString(UINT8 delimiter);				// Reads a string, if available. Strings are separated with the delimiter char.
 
@@ -48,17 +48,17 @@ public:
 	UINT32 read(UINT8* buffer, UINT32 bufferLen);			// Reads up to bufferLen bytes from the buffer.
 
 	// Read callbacks (for being called when data is available)
-	typedef void (*ReadFunction)(void* obj, UINT8* inputBuffer, UINT32& numBytes);	//  ReadFunction
+	using ReadFunction = void (*)(void *, UINT8 *, UINT32 &);	//  ReadFunction
 	void setReadCallbackFunction(ReadFunction readFunction, void* obj);
 
 	// Information if the connection is disconnected.
-	typedef void (*DisconnectFunction)(void* obj);								//  Called on disconnect
+	using DisconnectFunction = void (*)(void *);								//  Called on disconnect
 	void setDisconnectCallbackFunction(DisconnectFunction discFunction, void* obj);
 
-	uint64_t getNanosecTimestampLastTcpMessageReceived(void) { return m_last_tcp_msg_received_nsec; } // Returns a timestamp in nanoseconds of the last received tcp message (or 0 if no message received)
+	[[nodiscard]] uint64_t getNanosecTimestampLastTcpMessageReceived() const { return m_last_tcp_msg_received_nsec; } // Returns a timestamp in nanoseconds of the last received tcp message (or 0 if no message received)
 
 private:
-	bool m_longStringWarningPrinted;
+	bool m_longStringWarningPrinted{false};
 	std::string m_rxString;						// fuer readString()
 	bool isClientConnected_unlocked();
 	std::list<unsigned char> m_rxBuffer;		// Main input buffer
@@ -67,16 +67,16 @@ private:
 	void startServerThread();
 	void stopServerThread();
 	
-    struct sockaddr_in m_serverAddr;				// Local address
-	bool m_beVerbose;
+    struct sockaddr_in m_serverAddr{};				// Local address
+	bool m_beVerbose{false};
 	Mutex m_socketMutex;
 #ifndef _MSC_VER	
-	INT32 m_connectionSocket;	// Socket, wenn wir der Client sind (z.B. Verbindung zum Scanner)
+	INT32 m_connectionSocket{-1};	// Socket, wenn wir der Client sind (z.B. Verbindung zum Scanner)
 #else
 	SOCKET m_connectionSocket;	// Socket, wenn wir der Client sind (z.B. Verbindung zum Scanner)
 #endif
 	void readThreadFunction(bool& endThread, UINT16& waitTimeMs);
-	SickThread<Tcp, &Tcp::readThreadFunction>* m_readThread;
+	SickThread<Tcp, &Tcp::readThreadFunction>* m_readThread{nullptr};
 	INT32 readInputData();
 	
 	ReadFunction m_readFunction;		// Receive callback
@@ -84,5 +84,5 @@ private:
 	DisconnectFunction m_disconnectFunction;
 	void* m_disconnectFunctionObjPtr;	// Object of the Disconect callback
 
-	uint64_t m_last_tcp_msg_received_nsec; // timestamp in nanoseconds of the last received tcp message (or 0 if no message received)
+	uint64_t m_last_tcp_msg_received_nsec{0}; // timestamp in nanoseconds of the last received tcp message (or 0 if no message received)
 };

@@ -3,7 +3,7 @@
 
 
 sick_scansegment_xd::UdpReceiverSocketImpl::UdpReceiverSocketImpl() :
-    m_udp_sender(""), m_udp_port(0), m_udp_socket(INVALID_SOCKET), m_force_quit(false) {}
+     m_udp_port(0), m_udp_socket(INVALID_SOCKET), m_force_quit(false) {}
 
 sick_scansegment_xd::UdpReceiverSocketImpl::~UdpReceiverSocketImpl()
 {
@@ -47,7 +47,7 @@ bool sick_scansegment_xd::UdpReceiverSocketImpl::Init(const std::string& udp_sen
         // #endif
         // setsockopt(m_udp_socket, SOL_SOCKET, SO_BROADCAST, &broadcast_opt, sizeof(broadcast_opt));
         // setsockopt(m_udp_socket, SOL_SOCKET, SO_REUSEADDR, &reuse_addr_opt, sizeof(reuse_addr_opt));
-        struct sockaddr_in sim_servaddr = { 0 };
+        struct sockaddr_in sim_servaddr = { };
         if(m_udp_sender.empty())
             sim_servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
         else
@@ -84,7 +84,7 @@ void sick_scansegment_xd::UdpReceiverSocketImpl::ForceStop()
     m_udp_socket = INVALID_SOCKET;
 }
 
-size_t sick_scansegment_xd::UdpReceiverSocketImpl::Receive(std::vector<uint8_t>& msg_payload)
+size_t sick_scansegment_xd::UdpReceiverSocketImpl::Receive(std::vector<uint8_t>& msg_payload) const
 {
     int64_t bytes_received = 0;
     while(!m_force_quit && bytes_received == 0)
@@ -94,7 +94,7 @@ size_t sick_scansegment_xd::UdpReceiverSocketImpl::Receive(std::vector<uint8_t>&
     return (size_t)bytes_received;
 }
 
-size_t sick_scansegment_xd::UdpReceiverSocketImpl::Receive(std::vector<uint8_t>& msg_payload, double timeout, const std::vector<uint8_t>& udp_msg_start_seq)
+size_t sick_scansegment_xd::UdpReceiverSocketImpl::Receive(std::vector<uint8_t>& msg_payload, double timeout, const std::vector<uint8_t>& udp_msg_start_seq) const
 {
     chrono_system_time start_timestamp = chrono_system_clock::now();
     size_t headerlength = udp_msg_start_seq.size() + sizeof(uint32_t); // 8 byte header: 0x02020202 + Payloadlength
@@ -192,7 +192,7 @@ bool sick_scansegment_xd::UdpSenderSocketImpl::Send(std::vector<uint8_t>& messag
     {
         try
         {
-            struct sockaddr_in sim_servaddr = { 0 };
+            struct sockaddr_in sim_servaddr = {};
             if(m_server_address.empty())
             {
                 sim_servaddr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
@@ -202,7 +202,7 @@ bool sick_scansegment_xd::UdpSenderSocketImpl::Send(std::vector<uint8_t>& messag
                 #if defined WIN32 || defined _MSC_VER
                 sim_servaddr.sin_addr.s_addr = inet_addr(m_server_address.c_str());
                 #else
-                struct in_addr sim_in_addr;
+                struct in_addr sim_in_addr{};
                 if (inet_aton(m_server_address.c_str(), &sim_in_addr) != 0)
                 {
                     sim_servaddr.sin_addr.s_addr = sim_in_addr.s_addr;

@@ -4,6 +4,8 @@
 #pragma once
 
 #include <thread>
+#include <utility>
+#include <memory>
 //#include <pthread.h>
 #ifdef _MSC_VER
 //#include <unistd_win.h>
@@ -21,7 +23,7 @@ extern "C" void* wrapper_prerun(void*);
 class ThreadWrapperBase
 {
     //pthread_t t_id;
-    std::thread* t_id = 0;
+    std::unique_ptr<std::thread> t_id = nullptr;
     friend void* wrapper_prerun(void*);
     virtual void thread_entry() = 0;
 protected:
@@ -29,40 +31,32 @@ protected:
     std::string m_thread_name;
 public:
     
-    ThreadWrapperBase(const std::string& thread_name = "") : m_thread_name(thread_name) {pthis = NULL;};
-    virtual ~ThreadWrapperBase() { delete t_id; };
+    explicit ThreadWrapperBase(std::string  thread_name = "") : pthis(nullptr), m_thread_name(std::move(thread_name)) {};
+    virtual ~ThreadWrapperBase() = default;
     
     void run(void* classptr)
     {
-        if (pthis == NULL)
+        if (pthis == nullptr)
         {
             pthis = classptr;
             // pthread_create(&t_id, NULL, wrapper_prerun, this);
-            t_id = new std::thread(&wrapper_prerun, this); 
+            t_id = std::make_unique<std::thread>(&wrapper_prerun, this); 
         }
     }
     
     bool isRunning()
     {
-        if (pthis == NULL)
-        {
-            return false;
-        }
-        
-        return true;
+        return pthis != nullptr;
     }
     
     void join()
     {
         // pthread_join(t_id, NULL);
-        if(t_id && t_id->joinable())
+        if((t_id != nullptr) && t_id->joinable())
             t_id->join();
-        pthis = NULL;
+        pthis = nullptr;
     }
     
-    // pthread_t* get_thread_id() { return &t_id; }
-    std::thread* get_thread_id() { return t_id; }
-
 };
 
 
@@ -90,7 +84,7 @@ public:
 template <typename T, void (T::*M)(bool&, UINT16&)>
 class SickThread : public ThreadWrapperBase
 {
-    void thread_entry()
+    void thread_entry() override
     {
         T* pt = static_cast<T*>(pthis);
 
@@ -99,7 +93,7 @@ class SickThread : public ThreadWrapperBase
         UINT16 sleepTimeMs = 0;
         ROS_INFO_STREAM("SickThread " << m_thread_name << " started.");
         
-        while ((m_threadShouldRun == true) && (endThread == false))
+        while ((m_threadShouldRun) && (!endThread))
         {
             usleep(((UINT32)sleepTimeMs) * 1000);
             (pt->*M)(endThread, sleepTimeMs);
@@ -116,9 +110,9 @@ public:
         ThreadWrapperBase::join();
     }
     
-    SickThread(const std::string& thread_name = "") : ThreadWrapperBase(thread_name) {m_threadShouldRun = true;}
-    virtual ~SickThread(){};
-    bool m_threadShouldRun;
+    explicit SickThread(const std::string& thread_name = "") : ThreadWrapperBase(thread_name) {}
+    ~SickThread() override= default;
+    bool m_threadShouldRun{true};
 };
 
 /*

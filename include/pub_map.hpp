@@ -75,18 +75,18 @@ public:
             std::is_same<Msg_T, std_msgs::msg::String> >;
     // using Val_T = typename std::conditional<Is_Std_Msg, typename Msg_T::_data_type, void>::type;   // all standard msgs have one member of this typename
 
-public:
-    inline PublisherMap(
+
+    explicit PublisherMap(
         rclcpp::Node* n,
         std::string_view prefix = "",
         const rclcpp::QoS& qos = 1)
-        : node{ n }, default_qos{ qos }, prefix{ prefix }, publishers{} {}
+        : node{ n }, default_qos{ qos }, prefix{ prefix } {}
     PublisherMap(const PublisherMap&) = delete;
     ~PublisherMap() = default;
 
-public:
+
     // wraps the other addPub using the default QoS
-    inline Pub_T addPub(std::string_view topic)
+    Pub_T addPub(std::string_view topic)
     {
         return this->addPub(topic, this->default_qos);
     }
@@ -109,7 +109,7 @@ public:
         try
         {
             std::unique_lock _lock{ this->mtx };
-            auto ptr = this->publishers.insert({ std::string{ topic }, this->node->create_publisher<Msg_T>(full, qos) });
+            auto ptr = this->publishers.insert({ std::string{ topic }, this->node->template create_publisher<Msg_T>(full, qos) });
             if(ptr.second && ptr.first->second) return ptr.first->second;
         }
         catch(...) {}
@@ -136,7 +136,7 @@ public:
     }
 
     // wraps getPub()
-    inline Pub_T operator[](std::string_view topic)
+    Pub_T operator[](std::string_view topic)
     {
         return this->getPub(topic);
     }
@@ -166,7 +166,7 @@ public:
 protected:
     rclcpp::Node* node = nullptr;
     rclcpp::QoS default_qos = 1;
-    std::string prefix = "";
+    std::string prefix;
     std::unordered_map<std::string, Pub_T> publishers{};
     std::shared_mutex mtx;
 

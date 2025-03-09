@@ -11,7 +11,7 @@
 #include <cstring>
 #include <cassert>
 #include <stdexcept>
-#include <stdlib.h>
+#include <cstdlib>
 #include <limits>
 // #include "Trace.hpp"
 
@@ -54,7 +54,7 @@ UINT16 getValueOfChar(UINT8 c)
 //
 UINT8 nibbleToAscii(UINT8 value)
 {
-	UINT8 c;
+	UINT8 c = 0;
 
 	if (value > 0x0f)
 	{
@@ -112,7 +112,7 @@ void addFrameToBuffer(UINT8* sendBuffer, UINT8* cmdBuffer, UINT16* len)
  */
 UINT16 addUINT8ToBuffer(UINT8* buffer, UINT8 value)
 {
-	UINT16 len;
+	UINT16 len = 0;
 
 	len = addUINT32ToBuffer(buffer, (UINT32)value);
 
@@ -126,7 +126,7 @@ UINT16 addUINT8ToBuffer(UINT8* buffer, UINT8 value)
  */
 UINT16 addUINT16ToBuffer(UINT8* buffer, UINT16 value)
 {
-	UINT16 len;
+	UINT16 len = 0;
 
 	len = addUINT32ToBuffer(buffer, (UINT32)value);
 
@@ -140,8 +140,8 @@ UINT16 addUINT16ToBuffer(UINT8* buffer, UINT16 value)
  */
 UINT16 addINT8ToBuffer(UINT8* buffer, INT8 value)
 {
-	UINT16 stellenwert;
-	UINT8 c;
+	UINT16 stellenwert = 0;
+	UINT8 c = 0;
 	UINT16 pos = 0;
 	bool firstZero = true;
 
@@ -162,7 +162,7 @@ UINT16 addINT8ToBuffer(UINT8* buffer, INT8 value)
 	while (stellenwert > 0)
 	{
 		c = value / stellenwert;
-		if ((c != 0) || (firstZero == false) || (stellenwert == 1))
+		if ((c != 0) || (!firstZero) || (stellenwert == 1))
 		{
 			// Ziffer schreiben
 			buffer[pos++] = ('0' + c);
@@ -204,12 +204,12 @@ UINT16 addUINT32ToBuffer(UINT8* buffer, UINT32 value)
 	// Alle Nibbles durchgehen
 	bool firstZero = true;
 	UINT16 pos = 0;
-	UINT8 nibble;
+	UINT8 nibble = 0;
 
 	for (INT16 i = 7; i >= 0; i -= 1)
 	{
 		nibble = (value >> (i * 4)) & 0x0F;
-		if ((nibble != 0) || (firstZero == false) || (i == 0))
+		if ((nibble != 0) || (!firstZero) || (i == 0))
 		{
 			buffer[pos++] = nibbleToAscii(nibble);
 			firstZero = false;
@@ -335,7 +335,7 @@ double decodeReal(std::string* rxData)
 {
 	double value = std::numeric_limits<double>::quiet_NaN();
 	std::string text = colaa::getNextStringToken(rxData);
-	if (text.empty() == false)
+	if (!text.empty())
 	{
 		// Check representation
 		if ((text[0] == '+') || (text[0] == '-'))
@@ -351,7 +351,7 @@ double decodeReal(std::string* rxData)
 			{
 				float f;
 				unsigned char c[4];
-			} converter;
+			} converter{};
 			memset(&converter, 0, sizeof(converter));
 
 			if (text.length() == 8)
@@ -361,13 +361,13 @@ double decodeReal(std::string* rxData)
 				bool success = true;
 				for (int i = 7; i >= 0; --i)
 				{
-					unsigned char nibble;
+					unsigned char nibble = 0;
 					success &= GetNibble(text[i], nibble);
 					converter.c[hexIndex] |= (nibble << shift);
 					hexIndex += (shift >> 2);
 					shift ^= 4;
 				}
-				if (success == true)
+				if (success)
 				{
 					value = converter.f;
 				}
@@ -386,7 +386,7 @@ double decodeReal(const std::string& rxData)
 {
 	double value = std::numeric_limits<double>::quiet_NaN();
 	const std::string& text = rxData;
-	if (text.empty() == false)
+	if (!text.empty())
 	{
 		// Check representation
 		if ((text[0] == '+') || (text[0] == '-'))
@@ -402,7 +402,7 @@ double decodeReal(const std::string& rxData)
 			{
 				float f;
 				unsigned char c[4];
-			} converter;
+			} converter{};
 			memset(&converter, 0, sizeof(converter));
 
 			if (text.length() == 8)
@@ -412,13 +412,13 @@ double decodeReal(const std::string& rxData)
 				bool success = true;
 				for (int i = 7; i >= 0; --i)
 				{
-					unsigned char nibble;
+					unsigned char nibble = 0;
 					success &= GetNibble(text[i], nibble);
 					converter.c[hexIndex] |= (nibble << shift);
 					hexIndex += (shift >> 2);
 					shift ^= 4;
 				}
-				if (success == true)
+				if (success)
 				{
 					value = converter.f;
 				}
@@ -436,10 +436,10 @@ double decodeReal(const std::string& rxData)
 UINT32 decodeUINT32(std::string* rxData)
 {
 	UINT32 value = 0;
-	UINT32 tempVal;
+	UINT32 tempVal = 0;
 	UINT32 factor = 1;
 	UINT32 baseFactor = 10;
-	UINT16 digits;
+	UINT16 digits = 0;
 
 	// Zahlen-String extrahieren
 	std::string number = colaa::getNextStringToken(rxData);
@@ -485,11 +485,11 @@ INT16 decodeINT16(std::string* rxData)
 INT32 decodeINT32(std::string* rxData)
 {
 	INT32 value = 0;
-	INT32 tempVal;
+	INT32 tempVal = 0;
 	INT32 factor = 1;
 	INT32 baseFactor = 10;	// 10 = dez, 16 = hex
 	INT32 sign = 1;		// 1 oder -1
-	UINT16 digits;
+	UINT16 digits = 0;
 
 	// Zahlen-String extrahieren
 	std::string number = colaa::getNextStringToken(rxData);
@@ -547,15 +547,15 @@ INT16 decodeINT16(const std::string& rxData)
 INT32 decodeINT32(const std::string& rxData)
 {
 	INT32 value = 0;
-	INT32 tempVal;
+	INT32 tempVal = 0;
 	INT32 factor = 1;
 	INT32 baseFactor = 10;	// 10 = dez, 16 = hex
 	INT32 sign = 1;		// 1 oder -1
-	UINT16 digits;
+	UINT16 digits = 0;
 	UINT16 offset = 0;
 
 	// Zahlen-String extrahieren
-	const std::string number = rxData;
+	const std::string& number = rxData;
 
 	// Unterscheidung Pos/Neg/Hex
 	if (number.at(0) == '+')
@@ -637,7 +637,7 @@ UINT16 decodeUINT16(BYTE* buffer)
 //
 UINT16 decodeUINT16(std::string* rxData)
 {
-	UINT32 value;
+	UINT32 value = 0;
 
 	value = decodeUINT32(rxData);
 
@@ -650,7 +650,7 @@ UINT16 decodeUINT16(std::string* rxData)
  */
 UINT8 decodeUINT8(std::string* rxData)
 {
-	UINT32 value;
+	UINT32 value = 0;
 
 	value = decodeUINT32(rxData);
 
@@ -663,7 +663,7 @@ UINT8 decodeUINT8(std::string* rxData)
  */
 UINT16 decodeUINT16(const std::string& rxData)
 {
-	UINT32 value;
+	UINT32 value = 0;
 
 	value = decodeUINT32(rxData);
 
@@ -676,7 +676,7 @@ UINT16 decodeUINT16(const std::string& rxData)
  */
 UINT8 decodeUINT8(const std::string& rxData)
 {
-	UINT32 value;
+	UINT32 value = 0;
 
 	value = decodeUINT32(rxData);
 
@@ -693,9 +693,9 @@ UINT32 decodeUINT32(const std::string& rxData)
 {
 	UINT32 value = 0;
 	UINT32 factor = 1;
-	UINT32 tempVal;
+	UINT32 tempVal = 0;
 	UINT32 baseFactor = 10;	// 10 = dez, 16 = hex
-	UINT16 digits;
+	UINT16 digits = 0;
 	UINT16 offset = 0;
 
 	// Zahlen-String extrahieren
@@ -736,7 +736,7 @@ UINT32 decodeUINT32(const std::string& rxData)
  */
 UINT32 decodeXByte(std::string* rxData, UINT16 len)
 {
-	UINT32 value;
+	UINT32 value = 0;
 	UINT32 result = 0;
 
 	assert (len < 5);	// Wir koennen nur bis zu 4 Bytes in einen UINT32 packen

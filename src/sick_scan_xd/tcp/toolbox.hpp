@@ -5,15 +5,15 @@
 
 #pragma once
 
-#include <stdio.h>      /* for printf() and fprintf() */
+#include <cstdio>      /* for printf() and fprintf() */
 #ifdef _MSC_VER
 #include <winsock2.h>
 #else
 #include <sys/socket.h> /* for socket(), bind(), and connect() */
 #include <arpa/inet.h>  /* for sockaddr_in and inet_ntoa() */
 #endif
-#include <stdlib.h>     /* for atoi() and exit() */
-#include <string.h>     /* for memset() */
+#include <cstdlib>     /* for atoi() and exit() */
+#include <cstring>     /* for memset() */
 
 #include "BasicDatatypes.hpp"	// for PI
 
@@ -40,7 +40,7 @@ std::string ipAdrToString(UINT32 ipAddress);
 
 // Konvertiere einen String (IP-Adresse (IPv4)+Port) in seine Bestandteile.
 // Enthaelt der String keinen Port, bleibt dieser unveraendert.
-void stringToIpTarget(std::string ipAdrStr, UINT32& ipAddress, UINT16& port);
+void stringToIpTarget(const std::string& ipAdrStr, UINT32& ipAddress, UINT16& port);
 
 // Konvertiere eine Integer-Zahl in einen Hex-String
 std::string toHexString(UINT32 val);
@@ -93,4 +93,4 @@ void memwrite_INT16(BYTE*& buffer, INT16 value);
 void memwrite_UINT16(BYTE*& buffer, UINT16 value);
 void memwrite_INT8(BYTE*& buffer, INT8 value);
 void memwrite_UINT8(BYTE*& buffer, UINT8 value);
-void memwrite_string(BYTE*& buffer, std::string text);
+void memwrite_string(BYTE*& buffer, const std::string& text);

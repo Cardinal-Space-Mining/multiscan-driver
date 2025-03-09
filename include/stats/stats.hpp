@@ -39,14 +39,14 @@
 
 #pragma once
 
-#include <stdio.h>
+#include <cstdio>
 
 #include <array>
 #include <vector>
 #include <chrono>
 #include <thread>
 #include <mutex>
-#include <string.h>
+#include <cstring>
 
 #include <sys/times.h>
 
@@ -112,60 +112,60 @@ namespace proc
             TOTAL
         };
 
-    public:
-        inline CoreStats(bool p_all = false) : parse_all(p_all) {}
+    
+        explicit CoreStats(bool p_all = false) : parse_all(p_all) {}
         CoreStats(const CoreStats&) = delete;
         CoreStats(CoreStats&&) = default;
 
-        inline void configParseAll(bool val) { this->parse_all = val; }
-        inline bool validCore(size_t c) const { return c < this->individual.size(); }
+        void configParseAll(bool val) { this->parse_all = val; }
+        [[nodiscard]] bool validCore(size_t c) const { return c < this->individual.size(); }
 
-        inline _jiffies getIdle(size_t i = IMMEDIATE) const
+        [[nodiscard]] _jiffies getIdle(size_t i = IMMEDIATE) const
         {
             return getStates<State::IDLE, State::IOWAIT>(i);
         }
-        inline _jiffies getCoreIdle(size_t c, size_t i = IMMEDIATE) const
+        [[nodiscard]] _jiffies getCoreIdle(size_t c, size_t i = IMMEDIATE) const
         {
             return getCoreStates<State::IDLE, State::IOWAIT>(c, i);
         }
 
-        inline _jiffies getActive(size_t i = IMMEDIATE) const
+        [[nodiscard]] _jiffies getActive(size_t i = IMMEDIATE) const
         {
             return getStates<State::USER, State::NICE, State::SYSTEM, State::IRQ, State::SOFTIRQ, State::STEAL, State::GUEST, State::GUEST_NICE>(i);
         }
-        inline _jiffies getCoreActive(size_t c, size_t i = IMMEDIATE) const
+        [[nodiscard]] _jiffies getCoreActive(size_t c, size_t i = IMMEDIATE) const
         {
             return getCoreStates<State::USER, State::NICE, State::SYSTEM, State::IRQ, State::SOFTIRQ, State::STEAL, State::GUEST, State::GUEST_NICE>(c, i);
         }
 
-        inline _jiffies getTotal(size_t i = IMMEDIATE) const
+        [[nodiscard]] _jiffies getTotal(size_t i = IMMEDIATE) const
         {
             return getIdle(i) + getActive(i);
         }
-        inline _jiffies getCoreTotal(size_t c, size_t i = IMMEDIATE) const
+        [[nodiscard]] _jiffies getCoreTotal(size_t c, size_t i = IMMEDIATE) const
         {
             return getCoreIdle(c, i) + getCoreActive(c, i);
         }
 
         template<State S>
-        _jiffies getState(size_t = IMMEDIATE) const;
+        [[nodiscard]] _jiffies getState(size_t  /*i*/= IMMEDIATE) const;
         template<State S>
-        _jiffies getCoreState(size_t c, size_t = IMMEDIATE) const;
+        [[nodiscard]] _jiffies getCoreState(size_t c, size_t  /*i*/= IMMEDIATE) const;
         template<State S = State::TOTAL, State... states>
-        _jiffies getStates(size_t = IMMEDIATE) const;
+        [[nodiscard]] _jiffies getStates(size_t  /*i*/= IMMEDIATE) const;
         template<State S = State::TOTAL, State... states>
-        _jiffies getCoreStates(size_t c, size_t = IMMEDIATE) const;
+        [[nodiscard]] _jiffies getCoreStates(size_t c, size_t  /*i*/= IMMEDIATE) const;
 
         float fromLast();
         float fromLastCore(size_t c);
         void fromLastAll(std::vector<float>&);
 
         template<typename rep, typename period>
-        float inlineAverage(std::chrono::duration<rep,period>);
+        float inlineAverage(std::chrono::duration<rep,period> /*dt*/);
         template<typename rep, typename period>
-        float inlineAverageCore(std::chrono::duration<rep,period>, size_t c);
+        float inlineAverageCore(std::chrono::duration<rep,period> /*dt*/, size_t c);
         template<typename rep, typename period>
-        void inlineAverageAll(std::chrono::duration<rep,period>, std::vector<float>&);
+        void inlineAverageAll(std::chrono::duration<rep,period> /*dt*/, std::vector<float>& /*out*/);
 
 
     protected:
@@ -178,9 +178,9 @@ namespace proc
             REFERENCE = 1
         };
 
-        std::array<CoreBuff, 2> main;
+        std::array<CoreBuff, 2> main{};
         std::vector<std::array<CoreBuff, 2> > individual;
-        char head[4];
+        char head[4]{};
         bool parse_all;
 
     };

@@ -16,7 +16,7 @@ namespace util
     template <typename T>
     struct identity
     {
-        typedef T type;
+        using type = T;
     };
 
     template <typename T>

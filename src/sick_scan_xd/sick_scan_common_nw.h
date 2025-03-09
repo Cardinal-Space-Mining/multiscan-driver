@@ -86,24 +86,24 @@ private:
 
   void processFrame(SopasEventMessage &frame);
 
-  bool m_beVerbose;
+  bool m_beVerbose{false};
 
 
   // Response buffer
-  UINT32 m_numberOfBytesInResponseBuffer; ///< Number of bytes in buffer
-  UINT8 m_responseBuffer[1024]; ///< Receive buffer for everything except scan data and eval case data.
+  UINT32 m_numberOfBytesInResponseBuffer{}; ///< Number of bytes in buffer
+  UINT8 m_responseBuffer[1024]{}; ///< Receive buffer for everything except scan data and eval case data.
   Mutex m_receiveDataMutex; ///< Access mutex for buffer
 
   // Receive buffer
-  UINT32 m_numberOfBytesInReceiveBuffer; ///< Number of bytes in buffer
-  UINT8 m_receiveBuffer[25000]; ///< Low-Level receive buffer for all data (25000 should be enough for NAV300 Events)
+  UINT32 m_numberOfBytesInReceiveBuffer{}; ///< Number of bytes in buffer
+  UINT8 m_receiveBuffer[25000]{}; ///< Low-Level receive buffer for all data (25000 should be enough for NAV300 Events)
 
 
 
   // TCP
   Tcp m_tcp;
   std::string m_ipAddress;
-  UINT16 m_portNumber;
+  UINT16 m_portNumber{};
   SopasProtocol m_protocol;
 
 
@@ -125,7 +125,7 @@ protected:
     //		, RUNNING
   };
 
-  State m_state;
+  State m_state{CONSTRUCTED};
 };
 
 /// Class that represents a message that was sent by a sensor. (Event message)

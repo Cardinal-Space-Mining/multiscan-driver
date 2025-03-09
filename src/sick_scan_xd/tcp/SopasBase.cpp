@@ -8,6 +8,7 @@
 #include <cassert>
 #include <thread>
 #include <chrono>
+#include <utility>
 
 #include "SopasBase.hpp"
 #include "errorhandler.hpp"
@@ -62,9 +63,9 @@ const UINT16 SopasBase::INDEX_DEVICE_IDENT = 0;
 SopasBase::SopasBase() :
 	m_state(CONSTRUCTED)
 {
-	m_beVerbose = false;
 	
-	m_protocol = CoLa_A;	// Default protocol is CoLa-A
+	
+		// Default protocol is CoLa-A
 }
 
 
@@ -79,7 +80,7 @@ SopasBase::~SopasBase()
 	printInfoMessage("Sopas device destructor: Stopped, now disconnecting.", m_beVerbose);
 
 	// Disconnect and shut down receive thread.
-	if (isConnected() == true)
+	if (isConnected())
 	{
 		// Change from CONNECTED to CONSTRUCTED
 		disconnect();
@@ -106,7 +107,7 @@ bool SopasBase::init(SopasProtocol protocol,
 						void* obj)
 {
 	m_protocol = protocol;
-	m_ipAddress = ipAddress;
+	m_ipAddress = std::move(ipAddress);
 	m_portNumber = portNumber;
 	m_weWantScanData = weWantScanData;
 	m_weWantFieldData = weWantFieldData;
@@ -142,14 +143,14 @@ bool SopasBase::connect()
  	m_tcp.setReadCallbackFunction(&SopasBase::readCallbackFunctionS, this);	// , this, _1, _2));
 
 	bool success = openTcpConnection();
-	if (success == true)
+	if (success)
 	{
 		// Check if scanner type matches
 		m_state = CONNECTED;
 		printInfoMessage("SopasBase::connect: Reading scanner infos", m_beVerbose);
 		success = action_getScannerTypeAndVersion();
 
-		if (success == true)
+		if (success)
 		{
 			printInfoMessage("SopasBase::connect: Initialisation was successful.", m_beVerbose);
 		}
@@ -159,7 +160,7 @@ bool SopasBase::connect()
 		}
 	}
 
-	if (success == false)
+	if (!success)
 	{
 		printWarning("SopasBase::connect: Initialisation failed!");
 	}
@@ -209,7 +210,7 @@ void SopasBase::setReadOnlyMode(bool mode)
 
 
 
-bool SopasBase::isReadOnly()
+bool SopasBase::isReadOnly() const
 {
 	return m_readOnlyMode;
 }
@@ -226,7 +227,7 @@ bool SopasBase::openTcpConnection()
 	printInfoMessage("SopasBase::openTcpConnection: Connecting TCP/IP connection to " + m_ipAddress + ":" + toString(m_portNumber) + " ...", m_beVerbose);
 
 	bool success = m_tcp.open(m_ipAddress, m_portNumber, m_beVerbose);
-	if (success == false)
+	if (!success)
 	{
 		printError("SopasBase::openTcpConnection: ERROR: Failed to establish TCP connection, aborting!");
 		return false;
@@ -336,7 +337,7 @@ void SopasBase::readCallbackFunction(UINT8* buffer, UINT32& numOfBytes)
 SopasEventMessage SopasBase::findFrameInReceiveBuffer()
 {
 	UINT32 frameLen = 0;
-	UINT32 i;
+	UINT32 i = 0;
 
 	// Depends on protocol...
 	if (m_protocol == CoLa_A)
@@ -361,7 +362,7 @@ SopasEventMessage SopasBase::findFrameInReceiveBuffer()
 			{
 				// No start found, everything can be discarded
 				m_numberOfBytesInReceiveBuffer = 0; // Invalidate buffer
-				return SopasEventMessage(); // No frame found
+				return {}; // No frame found
 			}
 
 			// Move frame start to index 0
@@ -383,22 +384,22 @@ SopasEventMessage SopasBase::findFrameInReceiveBuffer()
 		if (i >= m_numberOfBytesInReceiveBuffer)
 		{
 			// No end marker found, so it's not a complete frame (yet)
-			return SopasEventMessage(); // No frame found
+			return {}; // No frame found
 		}
 
 		// Calculate frame length in byte
 		frameLen = i + 1;
 
-		return SopasEventMessage(m_receiveBuffer, CoLa_A, frameLen);
+		return {m_receiveBuffer, CoLa_A, frameLen};
 	}
 	else if (m_protocol == CoLa_B)
 	{
-		UINT32 magicWord;
-		UINT32 payloadlength;
+		UINT32 magicWord = 0;
+		UINT32 payloadlength = 0;
 
 		if (m_numberOfBytesInReceiveBuffer < 4)
 		{
-			return SopasEventMessage();
+			return {};
 		}
 		UINT16 pos = 0;
 		magicWord = colab::getIntegerFromBuffer<UINT32>(m_receiveBuffer, pos);
@@ -421,7 +422,7 @@ SopasEventMessage SopasBase::findFrameInReceiveBuffer()
 			{
 				// No start found, everything can be discarded
 				m_numberOfBytesInReceiveBuffer = 0; // Invalidate buffer
-				return SopasEventMessage(); // No frame found
+				return {}; // No frame found
 			}
 			else
 			{
@@ -438,7 +439,7 @@ SopasEventMessage SopasBase::findFrameInReceiveBuffer()
 			// Es sind nicht genug Daten fuer einen Frame
 			printInfoMessage("SopasBase::findFrameInReceiveBuffer: Frame cannot be decoded yet, only " +
 								 ::toString(m_numberOfBytesInReceiveBuffer) + " bytes in the buffer.", m_beVerbose);
-			return SopasEventMessage();
+			return {};
 		}
 
 		// Read length of payload
@@ -453,14 +454,14 @@ SopasEventMessage SopasBase::findFrameInReceiveBuffer()
 			printWarning("SopasBase::findFrameInReceiveBuffer: Frame too big for receive buffer. Frame discarded with length:"
 											+ ::toString(payloadlength) + ".");
 			m_numberOfBytesInReceiveBuffer = 0;
-			return SopasEventMessage();
+			return {};
 		}
 		if ((payloadlength + 9) > m_numberOfBytesInReceiveBuffer)
 		{
 			// magic word + length + s + checksum = 10
 			printInfoMessage("SopasBase::findFrameInReceiveBuffer: Frame not complete yet. Waiting for the rest of it (" +
 								 ::toString(payloadlength + 9 - m_numberOfBytesInReceiveBuffer) + " bytes missing).", m_beVerbose);
-			return SopasEventMessage(); // frame not complete
+			return {}; // frame not complete
 		}
 
 		// Calculate the total frame length in bytes: Len = Frame (9 bytes) + Payload
@@ -471,7 +472,7 @@ SopasEventMessage SopasBase::findFrameInReceiveBuffer()
 		//
 		UINT8 temp = 0;
 		UINT8 temp_xor = 0;
-		UINT8 checkSum;
+		UINT8 checkSum = 0;
 
 		// Read original checksum
 		pos = frameLen - 1;
@@ -490,14 +491,14 @@ SopasEventMessage SopasBase::findFrameInReceiveBuffer()
 		{
 			printWarning("SopasBase::findFrameInReceiveBuffer: Wrong checksum, Frame discarded.");
 			m_numberOfBytesInReceiveBuffer = 0;
-			return SopasEventMessage();
+			return {};
 		}
 
-		return SopasEventMessage(m_receiveBuffer, CoLa_B, frameLen);
+		return {m_receiveBuffer, CoLa_B, frameLen};
 	}
 
 	// Return empty frame
-	return SopasEventMessage();
+	return {};
 }
 
 
@@ -541,7 +542,7 @@ bool SopasBase::sendCommandBuffer(UINT8* buffer, UINT16 len)
  * By Name: name = "<Name>"
  * timeout: Number of cycles to check for an answer (approx. 1ms per cycle)
  */
-bool SopasBase::receiveAnswer(SopasCommand cmd, std::string name, UINT32 timeout, SopasAnswer*& answer)
+bool SopasBase::receiveAnswer(SopasCommand cmd, const std::string& name, UINT32 timeout, SopasAnswer*& answer)
 {
 	switch (m_protocol)
 	{
@@ -616,7 +617,7 @@ bool SopasBase::receiveAnswer_CoLa_A(SopasCommand cmd, UINT16 index, UINT32 time
 			}
 		}
 
-		if (rxData.length() > 0)
+		if (!rxData.empty())
 		{
 			// Decode data
 			receivedCommand = colaA_decodeCommand(&rxData);
@@ -687,7 +688,7 @@ bool SopasBase::receiveAnswer_CoLa_A(SopasCommand cmd, UINT16 index, UINT32 time
 
 
 
-bool SopasBase::receiveAnswer_CoLa_A(SopasCommand cmd, std::string name, UINT32 timeout, SopasAnswer*& answer)
+bool SopasBase::receiveAnswer_CoLa_A(SopasCommand cmd, const std::string& name, UINT32 timeout, SopasAnswer*& answer)
 {
 	printInfoMessage("SopasBase::receiveAnswer_CoLa_A: entering function.", m_beVerbose);
 
@@ -713,7 +714,7 @@ bool SopasBase::receiveAnswer_CoLa_A(SopasCommand cmd, std::string name, UINT32 
 			}
 		}
 
-		if (rxData.length() > 0)
+		if (!rxData.empty())
 		{
 			// Decode data
 			receivedCommand = colaA_decodeCommand(&rxData);
@@ -783,12 +784,12 @@ bool SopasBase::receiveAnswer_CoLa_A(SopasCommand cmd, std::string name, UINT32 
 
 
 
-bool SopasBase::receiveAnswer_CoLa_B(SopasCommand cmd, std::string name, UINT32 timeout, SopasAnswer*& answer)
+bool SopasBase::receiveAnswer_CoLa_B(SopasCommand cmd, const std::string& name, UINT32 timeout, SopasAnswer*& answer)
 {
 	printInfoMessage("SopasBase::receiveAnswer_CoLa_B: Entering function.", m_beVerbose);
 
 	SopasCommand receivedCommand;
-	UINT16 nextData;
+	UINT16 nextData = 0;
 	std::string receivedName;
 
 	if (timeout == 0)
@@ -994,7 +995,7 @@ bool SopasBase::receiveAnswer_CoLa_B(SopasCommand cmd, UINT16 index, UINT32 time
 	printInfoMessage("SopasBase::receiveAnswer_CoLa_B_idx: Entering function.", beVerboseHere);
 
 	SopasCommand receivedCommand;
-	UINT16 nextData;
+	UINT16 nextData = 0;
 
 	if (timeout == 0)
 	{
@@ -1172,7 +1173,7 @@ void SopasBase::processFrame_CoLa_A(SopasEventMessage& frame)
 			}
 			eventName = std::string((char*) m_receiveBuffer, 5, i - 5); // get the event Name
 
-			if (m_decoderFunctionMapByName[eventName] != NULL)
+			if (m_decoderFunctionMapByName[eventName] != nullptr)
 			{
 				// Not empty
 				m_decoderFunctionMapByName[eventName](frame);// call the callback of the Event
@@ -1288,7 +1289,7 @@ void SopasBase::processFrame_CoLa_B(SopasEventMessage& frame)
 				break;
 			}
 
-			if (frameWasProcessed == false)
+			if (!frameWasProcessed)
 			{
 				// The incoming event was not handeled
 				printWarning("SopasBase::processFrame_CoLa_B: Don't know how to process the incoming event with the short name <" +
@@ -1560,10 +1561,10 @@ bool SopasBase::action_getScannerTypeAndVersion()
 	result = m_scannerName.empty();
 	result = m_scannerVersion.empty();
 
-	SopasAnswer* answer = NULL;
+	SopasAnswer* answer = nullptr;
 	result = readVariable(INDEX_DEVICE_IDENT, answer);
 
-	if (result && answer != NULL && answer->isValid())
+	if (result && answer != nullptr && answer->isValid())
 	{
 
 		// decode answer
@@ -1585,7 +1586,7 @@ bool SopasBase::action_getScannerTypeAndVersion()
 		}
 	}
 
-	if (answer != NULL)
+	if (answer != nullptr)
 	{
 		delete answer;
 	}
@@ -1632,7 +1633,7 @@ void SopasBase::colaB_decodeScannerTypeAndVersion(UINT8* buffer, UINT16 pos)
 {
 	printInfoMessage("SopasBase::colaB_decodeScannerTypeAndVersion: Entering function.", m_beVerbose);
 
-	UINT16 fieldLength;
+	UINT16 fieldLength = 0;
 
 	// read device type
 	fieldLength = colab::getIntegerFromBuffer<UINT16>(buffer, pos);
@@ -1695,7 +1696,7 @@ bool SopasBase::invokeMethod(const std::string& methodeName, BYTE* parameters, U
 	bool result = receiveAnswer(AN, methodeName, 2000, answer);
 
 	// Evaluate answer
-	if (result == true)
+	if (result)
 	{
 		printInfoMessage("SopasBase::invokeMethod: Calling of " + methodeName + " was successful.", m_beVerbose);
 	}
@@ -1748,7 +1749,7 @@ bool SopasBase::invokeMethod(UINT16 index, BYTE* parameters, UINT16 parametersLe
 	bool result = receiveAnswer(AI, index, 2000, answer);
 
 	// Evaluate answer
-	if (result == true)
+	if (result)
 	{
 		printInfoMessage("SopasBase::invokeMethod: Calling of method with index=" + ::toString(index) + " was successful.", m_beVerbose);
 	}
@@ -1902,11 +1903,11 @@ bool SopasBase::writeVariable(const std::string& variableName, BYTE* parameters,
 		ROS_ERROR("## ERROR in SopasBase::writeVariable(): sendCommandBuffer failed")
 		return false;
 	}
-	SopasAnswer* answer = NULL;
+	SopasAnswer* answer = nullptr;
 	// Wait for answer
 	bool result = receiveAnswer(WA, variableName, 2000, answer);
 	// free memory for answer
-	if (answer != NULL)
+	if (answer != nullptr)
 	{
 		delete answer;
 	}
@@ -1932,7 +1933,7 @@ bool SopasBase::writeVariable(UINT16 variableIndex, BYTE* parameters, UINT16 par
 	bool beVerboseHere = m_beVerbose;
 //	beVerboseHere = true;
 	
-	if (m_readOnlyMode == true)
+	if (m_readOnlyMode)
 	{
 		printInfoMessage("SopasBase::writeVariable: ReadOnly Modus - ignore writing to variable index '" + ::toString(variableIndex) +
 									 "'", m_beVerbose);
@@ -1964,11 +1965,11 @@ bool SopasBase::writeVariable(UINT16 variableIndex, BYTE* parameters, UINT16 par
 	}
 	
 	printInfoMessage("SopasBase::writeVariable: Command sent, waiting for reply...", beVerboseHere);
-	SopasAnswer* answer = NULL;
+	SopasAnswer* answer = nullptr;
 	// Wait for answer
 	bool result = receiveAnswer(WA, variableIndex, 2000, answer);
 	// free memory for answer
-	if (answer != NULL)
+	if (answer != nullptr)
 	{
 		delete answer;
 	}
@@ -2018,13 +2019,13 @@ bool SopasBase::registerEvent(const std::string& eventName)
 		ROS_ERROR("## ERROR in SopasBase::registerEvent(): sendCommandBuffer failed")
 		return false;
 	}
-	SopasAnswer* answer = NULL;
+	SopasAnswer* answer = nullptr;
 	// Wait for answer
 	bool result = receiveAnswer(EA, eventName, 2000, answer);
 
 
 	// free memory for answer
-	if (answer != NULL)
+	if (answer != nullptr)
 	{
 		delete answer;
 	}
@@ -2064,17 +2065,17 @@ bool SopasBase::registerEvent(UINT16 index)
 	}
 
 	// Wait for answer
-	SopasAnswer* answer = NULL;
+	SopasAnswer* answer = nullptr;
 	bool result = receiveAnswer(EA, index, 2000, answer);
 
 	// there will be no answer (but to be sure to prevent memory leaks)
-	if (answer != NULL)
+	if (answer != nullptr)
 	{
 		delete answer;
 	}
 
 	// Evaluate answer
-	if (result == true)
+	if (result)
 	{
 		printInfoMessage("SopasBase::registerEvent: Calling of register with index=" + ::toString(index) + " was successful.", m_beVerbose);
 	}
@@ -2116,17 +2117,17 @@ bool SopasBase::unregisterEvent(UINT16 index)
 	}
 
 	// Wait for answer
-	SopasAnswer* answer = NULL;
+	SopasAnswer* answer = nullptr;
 	bool result = receiveAnswer(EA, index, 2000, answer);
 
 	// there will be no answer (but to be sure to prevent memory leaks)
-	if (answer != NULL)
+	if (answer != nullptr)
 	{
 		delete answer;
 	}
 
 	// Evaluate answer
-	if (result == true)
+	if (result)
 	{
 		printInfoMessage("SopasBase::calling of register with index=" + ::toString(index) + " was successful.", m_beVerbose);
 	}
@@ -2170,13 +2171,13 @@ bool SopasBase::unregisterEvent(const std::string& eventName)
 		ROS_ERROR("## ERROR in SopasBase::unregisterEvent(): sendCommandBuffer failed")
 		return false;
 	}
-	SopasAnswer* answer = NULL;
+	SopasAnswer* answer = nullptr;
 	// Wait for answer
 	bool result = receiveAnswer(EA, eventName, 2000, answer);
 
 
 	// free memory for answer
-	if (answer != NULL)
+	if (answer != nullptr)
 	{
 		delete answer;
 	}
@@ -2186,7 +2187,7 @@ bool SopasBase::unregisterEvent(const std::string& eventName)
 /**
  * Returns a timestamp in nanoseconds of the last received tcp message (or 0 if no message received)
  */
-uint64_t SopasBase::getNanosecTimestampLastTcpMessageReceived(void)
+uint64_t SopasBase::getNanosecTimestampLastTcpMessageReceived()
 { 
 	return m_tcp.getNanosecTimestampLastTcpMessageReceived(); 
 }
@@ -2206,7 +2207,7 @@ double SopasBase::makeAngleValid(double angle)
 // ************************* SOPAS FRAME ************************************************** //
 //
 SopasEventMessage::SopasEventMessage() :
-	m_buffer(NULL), m_protocol(SopasBase::CoLa_A), m_frameLength(0), m_encoding(SopasBase::ByName)
+	m_buffer(nullptr), m_protocol(SopasBase::CoLa_A), m_frameLength(0), m_encoding(SopasBase::ByName)
 {
 }
 
@@ -2263,7 +2264,7 @@ std::string SopasEventMessage::getCommandString() const
 //
 BYTE* SopasEventMessage::getPayLoad()
 {
-	BYTE* bufferPos = NULL;
+	BYTE* bufferPos = nullptr;
 
 	switch (m_protocol)
 	{
@@ -2313,8 +2314,8 @@ INT32 SopasEventMessage::getVariableIndex()
 std::string SopasEventMessage::getVariableName()
 {
 	std::string name;
-	UINT32 i;
-	BYTE* bufferPos;
+	UINT32 i = 0;
+	BYTE* bufferPos = nullptr;
 
 	if (m_encoding == SopasBase::ByName)
 	{
@@ -2403,13 +2404,13 @@ SopasAnswer::SopasAnswer(const BYTE* answer, UINT32 answerLength) : m_answerLeng
 	}
 	else
 	{
-		m_answerBuffer = NULL;
+		m_answerBuffer = nullptr;
 	}
 }
 
 SopasAnswer::~SopasAnswer()
 {
-	if (m_answerBuffer != NULL)
+	if (m_answerBuffer != nullptr)
 	{
 		delete[] m_answerBuffer;
 		m_answerLength = 0;
