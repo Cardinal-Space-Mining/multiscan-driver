@@ -134,10 +134,10 @@ namespace sick_scansegment_xd
         void ForceStop();
 
         /** Reads blocking until some data has been received successfully or an error occurs. Returns the number of bytes received. */
-        size_t Receive(std::vector<uint8_t>& msg_payload);
+        size_t Receive(std::vector<uint8_t>& msg_payload) const;
 
         /** Reads blocking until all bytes of a msgpack incl. header and crc have been received or an error occurs. Returns the number of bytes received. */
-        size_t Receive(std::vector<uint8_t>& msg_payload, double timeout, const std::vector<uint8_t>& udp_msg_start_seq);
+        size_t Receive(std::vector<uint8_t>& msg_payload, double timeout, const std::vector<uint8_t>& udp_msg_start_seq) const;
 
         /** Return the udp port */
         inline int port(void) const { return m_udp_port; }

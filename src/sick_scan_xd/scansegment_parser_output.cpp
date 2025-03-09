@@ -86,7 +86,7 @@
 * In case of multiScan136, ScanSegmentParserOutput has 16 groups (layers), each group has 3 echos, each echo has a list of LidarPoint data in catesian coordinates
 * (x, y, z in meter and intensity). In case of picoScan, ScanSegmentParserOutput has 1 layer.
 */
-sick_scansegment_xd::ScanSegmentParserOutput::ScanSegmentParserOutput() : timestamp(""), timestamp_sec(0), timestamp_nsec(0), segmentIndex(0), telegramCnt(0) 
+sick_scansegment_xd::ScanSegmentParserOutput::ScanSegmentParserOutput() :  timestamp_sec(0), timestamp_nsec(0), segmentIndex(0), telegramCnt(0) 
 {
 }
 
@@ -110,7 +110,7 @@ std::string sick_scansegment_xd::Timestamp(const std::chrono::system_clock::time
 {
 	std::time_t cur_time = std::chrono::system_clock::to_time_t(now);
 	std::chrono::milliseconds milliseonds = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
-	struct tm local_time;
+	struct tm local_time{};
 	localtime_s(&local_time, &cur_time);
 	std::stringstream time_stream;
 	time_stream << std::put_time(&local_time, "%F %T") << "." << std::setfill('0') << std::setw(3) << milliseonds.count();

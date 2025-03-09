@@ -53,12 +53,12 @@ public:
     };
 
     // Array and object typedefs
-    typedef std::vector<MsgPack> array;
-    typedef std::map<MsgPack, MsgPack> object;
+    using array = std::vector<MsgPack>;
+    using object = std::map<MsgPack, MsgPack>;
 
     // Binary and extension typedefs
-    typedef std::vector<uint8_t> binary;
-    typedef std::tuple<int8_t, binary> extension;
+    using binary = std::vector<uint8_t>;
+    using extension = std::tuple<int8_t, binary>;
 
     // Constructors for the various types of JSON value.
     MsgPack() noexcept;                // NUL
@@ -88,83 +88,83 @@ public:
 
     // Implicit constructor: anything with a to_msgpack() function.
     template <class T, class = decltype(&T::to_msgpack)>
-    MsgPack(const T & t) : MsgPack(t.to_msgpack()) {}
+    explicit MsgPack(const T & t) : MsgPack(t.to_msgpack()) {}
 
     // Implicit constructor: map-like objects (std::map, std::unordered_map, etc)
-    template <class M, typename std::enable_if<
-        std::is_constructible<MsgPack, typename M::key_type>::value
-        && std::is_constructible<MsgPack, typename M::mapped_type>::value,
-            int>::type = 0>
-    MsgPack(const M & m) : MsgPack(object(m.begin(), m.end())) {}
+    template <class M, std::enable_if_t<
+        std::is_constructible_v<MsgPack, typename M::key_type>
+        && std::is_constructible_v<MsgPack, typename M::mapped_type>,
+            int> = 0>
+    explicit MsgPack(const M & m) : MsgPack(object(m.begin(), m.end())) {}
 
     // Implicit constructor: vector-like objects (std::list, std::vector, std::set, etc)
-    template <class V, typename std::enable_if<
-        std::is_constructible<MsgPack, typename V::value_type>::value &&
-        !std::is_same<typename binary::value_type, typename V::value_type>::value,
-            int>::type = 0>
-    MsgPack(const V & v) : MsgPack(array(v.begin(), v.end())) {}
+    template <class V, std::enable_if_t<
+        std::is_constructible_v<MsgPack, typename V::value_type> &&
+        !std::is_same_v<typename binary::value_type, typename V::value_type>,
+            int> = 0>
+    explicit MsgPack(const V & v) : MsgPack(array(v.begin(), v.end())) {}
 
-    template <class V, typename std::enable_if<
-        std::is_constructible<MsgPack, typename V::value_type>::value &&
-        std::is_same<typename binary::value_type, typename V::value_type>::value,
-            int>::type = 0>
-    MsgPack(const V & v) : MsgPack(binary(v.begin(), v.end())) {}
+    template <class V, std::enable_if_t<
+        std::is_constructible_v<MsgPack, typename V::value_type> &&
+        std::is_same_v<typename binary::value_type, typename V::value_type>,
+            int> = 0>
+    explicit MsgPack(const V & v) : MsgPack(binary(v.begin(), v.end())) {}
 
     // This prevents MsgPack(some_pointer) from accidentally producing a bool. Use
     // MsgPack(bool(some_pointer)) if that behavior is desired.
     MsgPack(void *) = delete;
 
     // Accessors
-    Type type() const;
+    [[nodiscard]] Type type() const;
 
-    bool is_null()      const { return type() == NUL; }
-    bool is_bool()      const { return type() == BOOL; }
-    bool is_number()    const { return type() & NUMBER; }
-    bool is_float32()   const { return type() == FLOAT32; }
-    bool is_float64()   const { return type() == FLOAT64; }
-    bool is_int()       const { return (type() & INT) == INT; }
-    bool is_int8()      const { return type() == INT8; }
-    bool is_int16()     const { return type() == INT16; }
-    bool is_int32()     const { return type() == INT32; }
-    bool is_int64()     const { return type() == INT64; }
-    bool is_uint8()     const { return type() == UINT8; }
-    bool is_uint16()    const { return type() == UINT16; }
-    bool is_uint32()    const { return type() == UINT32; }
-    bool is_uint64()    const { return type() == UINT64; }
-    bool is_string()    const { return type() == STRING; }
-    bool is_array()     const { return type() == ARRAY; }
-    bool is_binary()    const { return type() == BINARY; }
-    bool is_object()    const { return type() == OBJECT; }
-    bool is_extension() const { return type() == EXTENSION; }
+    [[nodiscard]] bool is_null()      const { return type() == NUL; }
+    [[nodiscard]] bool is_bool()      const { return type() == BOOL; }
+    [[nodiscard]] bool is_number()    const { return (type() & NUMBER) != 0; }
+    [[nodiscard]] bool is_float32()   const { return type() == FLOAT32; }
+    [[nodiscard]] bool is_float64()   const { return type() == FLOAT64; }
+    [[nodiscard]] bool is_int()       const { return (type() & INT) == INT; }
+    [[nodiscard]] bool is_int8()      const { return type() == INT8; }
+    [[nodiscard]] bool is_int16()     const { return type() == INT16; }
+    [[nodiscard]] bool is_int32()     const { return type() == INT32; }
+    [[nodiscard]] bool is_int64()     const { return type() == INT64; }
+    [[nodiscard]] bool is_uint8()     const { return type() == UINT8; }
+    [[nodiscard]] bool is_uint16()    const { return type() == UINT16; }
+    [[nodiscard]] bool is_uint32()    const { return type() == UINT32; }
+    [[nodiscard]] bool is_uint64()    const { return type() == UINT64; }
+    [[nodiscard]] bool is_string()    const { return type() == STRING; }
+    [[nodiscard]] bool is_array()     const { return type() == ARRAY; }
+    [[nodiscard]] bool is_binary()    const { return type() == BINARY; }
+    [[nodiscard]] bool is_object()    const { return type() == OBJECT; }
+    [[nodiscard]] bool is_extension() const { return type() == EXTENSION; }
 
     // Return the enclosed value if this is a number, 0 otherwise. Note that msgpack11 does not
     // distinguish between integer and non-integer numbers - number_value() and int_value()
     // can both be applied to a NUMBER-typed object.
-    double number_value() const;
-    float float32_value() const;
-    double float64_value() const;
-    int32_t int_value() const;
-    int8_t int8_value() const;
-    int16_t int16_value() const;
-    int32_t int32_value() const;
-    int64_t int64_value() const;
-    uint8_t uint8_value() const;
-    uint16_t uint16_value() const;
-    uint32_t uint32_value() const;
-    uint64_t uint64_value() const;
+    [[nodiscard]] double number_value() const;
+    [[nodiscard]] float float32_value() const;
+    [[nodiscard]] double float64_value() const;
+    [[nodiscard]] int32_t int_value() const;
+    [[nodiscard]] int8_t int8_value() const;
+    [[nodiscard]] int16_t int16_value() const;
+    [[nodiscard]] int32_t int32_value() const;
+    [[nodiscard]] int64_t int64_value() const;
+    [[nodiscard]] uint8_t uint8_value() const;
+    [[nodiscard]] uint16_t uint16_value() const;
+    [[nodiscard]] uint32_t uint32_value() const;
+    [[nodiscard]] uint64_t uint64_value() const;
 
     // Return the enclosed value if this is a boolean, false otherwise.
-    bool bool_value() const;
+    [[nodiscard]] bool bool_value() const;
     // Return the enclosed string if this is a string, "" otherwise.
-    const std::string &string_value() const;
+    [[nodiscard]] const std::string &string_value() const;
     // Return the enclosed std::vector if this is an array, or an empty vector otherwise.
-    const array &array_items() const;
+    [[nodiscard]] const array &array_items() const;
     // Return the enclosed std::map if this is an object, or an empty map otherwise.
-    const object &object_items() const;
+    [[nodiscard]] const object &object_items() const;
     // Return the enclosed std::vector if this is an binary, or an empty map otherwise.
-    const binary &binary_items() const;
+    [[nodiscard]] const binary &binary_items() const;
     // Return the enclosed std::tuple if this is an extension, or an empty map otherwise.
-    const extension &extension_items() const;
+    [[nodiscard]] const extension &extension_items() const;
 
     // Return a reference to arr[i] if this is an array, MsgPack() otherwise.
     const MsgPack & operator[](size_t i) const;
@@ -178,7 +178,7 @@ public:
         out = ss.str();
     }
     
-    std::string dump() const {
+    [[nodiscard]] std::string dump() const {
         std::stringstream ss;
         ss << *this;
         return ss.str();
@@ -199,7 +199,7 @@ public:
     // If parse fails, return MsgPack() and sets failbit on stream.
     static MsgPack parse(std::istream& is);
     static MsgPack parse(const char * in, size_t len, std::string & err) {
-        if (in) {
+        if (in != nullptr) {
             return parse(std::string(in,in+len), err);
         } else {
             err = "null input";
@@ -212,10 +212,10 @@ public:
         std::string::size_type & parser_stop_pos,
         std::string & err);
 
-    static inline std::vector<MsgPack> parse_multi(
+    static std::vector<MsgPack> parse_multi(
         const std::string & in,
         std::string & err) {
-        std::string::size_type parser_stop_pos;
+        std::string::size_type parser_stop_pos = 0;
         return parse_multi(in, parser_stop_pos, err);
     }
 
@@ -231,7 +231,7 @@ public:
      * Return true if this is a JSON object and, for each item in types, has a field of
      * the given type. If not, return false and set err to a descriptive message.
      */
-    typedef std::initializer_list<std::pair<std::string, Type>> shape;
+    using shape = std::initializer_list<std::pair<std::string, Type>>;
     bool has_shape(const shape & types, std::string & err) const;
 
 private:

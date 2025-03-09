@@ -1,3 +1,3 @@
 #pragma once
 
-void wsa_init(void);
+void wsa_init();

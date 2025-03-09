@@ -214,7 +214,7 @@ public:
     };
 
 public:
-    SickScanCommonTcp(const std::string &hostname, int port, char cola_dialect_id);
+    SickScanCommonTcp(std::string hostname, int port, char cola_dialect_id);
     ~SickScanCommonTcp();
 
     static void disconnectFunctionS(void *obj);
@@ -222,9 +222,9 @@ public:
     void readCallbackFunction(UINT8 *buffer, UINT32 &numOfBytes);
 
     void setReplyMode(int _mode);
-    int getReplyMode();
+    int getReplyMode() const;
 
-    size_t getReadTimeOutInMs();
+    size_t getReadTimeOutInMs() const;
     void setReadTimeOutInMs(size_t timeOutInMs);
 
     int getProtocolType(void);
@@ -246,7 +246,7 @@ public:
      * @param requestStr sent request string
      * @return Expected answer
      */
-    static std::vector<std::string> generateExpectedAnswerString(const std::vector<unsigned char> requestStr);
+    static std::vector<std::string> generateExpectedAnswerString(const std::vector<unsigned char>& requestStr);
 
     /**
      * \brief Converts a given SOPAS command from ascii to binary (in case of binary communication), sends sopas (ascii or binary) and returns the response (if wait_for_reply:=true)
@@ -286,8 +286,8 @@ public:
     SickScanCommonNw m_nw;
     Queue<DatagramWithTimeStamp> recvQueue;
     UINT32 m_alreadyReceivedBytes;
-    UINT32 m_lastPacketSize;
-    UINT8 m_packetBuffer[480000];
+    UINT32 m_lastPacketSize{};
+    UINT8 m_packetBuffer[480000]{};
 
 protected:
     void disconnectFunction();
@@ -311,25 +311,25 @@ protected:
 
 private:
     // Response buffer
-    UINT32 m_numberOfBytesInResponseBuffer; ///< Number of bytes in buffer
-    UINT8 m_responseBuffer[1024]; ///< Receive buffer for everything except scan data and eval case data.
+    UINT32 m_numberOfBytesInResponseBuffer{}; ///< Number of bytes in buffer
+    UINT8 m_responseBuffer[1024]{}; ///< Receive buffer for everything except scan data and eval case data.
     Mutex m_receiveDataMutex; ///< Access mutex for buffer
 
     // Receive buffer
     UINT32 m_numberOfBytesInReceiveBuffer; ///< Number of bytes in buffer
-    UINT8 m_receiveBuffer[480000]; ///< Low-Level receive buffer for all data
+    UINT8 m_receiveBuffer[480000]{}; ///< Low-Level receive buffer for all data
 
-    bool m_beVerbose;
+    bool m_beVerbose{};
 
-    size_t bytes_transfered_;
+    size_t bytes_transfered_{};
 
     SopasProtocol m_protocolId;
     std::string hostname_;
     int port_;
-    int m_replyMode;
+    int m_replyMode{};
 
     std::mutex sopasSendMutex; // mutex to lock sendSopasAndCheckAnswer
-    size_t readTimeOutInMs;
+    size_t readTimeOutInMs{};
     size_t m_read_timeout_millisec_default = 5000;
     size_t m_read_timeout_millisec_startup = 10000;
 

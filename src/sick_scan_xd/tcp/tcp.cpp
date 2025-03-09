@@ -4,7 +4,7 @@
 // TCP-Client.
 //
 
-#include <stdio.h>      // for sprintf()
+#include <cstdio>      // for sprintf()
 
 #ifdef _MSC_VER
 #include <WinSock2.h>
@@ -12,7 +12,7 @@
 #include <sys/socket.h> // for socket(), bind(), and connect()
 #include <arpa/inet.h>  // for sockaddr_in and inet_ntoa()
 #endif
-#include <string.h>     // for memset()
+#include <cstring>     // for memset()
 #include <netdb.h>      // for hostent
 #include <iostream>     // for cout
 #ifndef _MSC_VER
@@ -27,26 +27,26 @@
 #include "../sick_ros_wrapper.h"
 
 
-Tcp::Tcp()
+Tcp::Tcp() : m_disconnectFunction(NULL), m_disconnectFunctionObjPtr(NULL), m_readFunction(NULL), m_readFunctionObjPtr(NULL)
 {
-	m_beVerbose = false;
-	m_connectionSocket = -1;
 	
-	m_readThread = 0; // m_readThread.m_threadShouldRun = false;
 	
-	m_longStringWarningPrinted = false;
-	m_disconnectFunction = NULL;
-	m_disconnectFunctionObjPtr = NULL;
-	m_readFunction = NULL;
-	m_readFunctionObjPtr = NULL;
+	
+	// m_readThread.m_threadShouldRun = false;
+	
+	
+	
+	
+	
+	
 
-    m_last_tcp_msg_received_nsec = 0; // no message received
+    // no message received
 }
 
 //
 // Destruktor.
 //
-Tcp::~Tcp(void)
+Tcp::~Tcp()
 {
 	close();
 }
@@ -60,13 +60,13 @@ Tcp::~Tcp(void)
 bool Tcp::write(UINT8* buffer, UINT32 numberOfBytes)
 {
 	// Ist die Verbindung offen?
-	if (isOpen() == false)
+	if (!isOpen())
 	{
 		ROS_ERROR("Tcp::write: Connection is not open");
 		return false;
 	}
-	INT32 bytesSent;
-	bool result;
+	INT32 bytesSent = 0;
+	bool result = false;
 #ifdef _MSC_VER
 	SOCKET* socketPtr = &m_connectionSocket;
 	bytesSent = ::send(*socketPtr, (const char*)buffer, numberOfBytes, 0);
@@ -107,7 +107,7 @@ void Tcp::setDisconnectCallbackFunction(DisconnectFunction discFunction, void* o
  *
  * -- Wir sind der Client und mit einem Server verbunden --
  */
-bool Tcp::isOpen()
+bool Tcp::isOpen() const
 {
 	if (m_connectionSocket >= 0)
 	{
@@ -148,9 +148,9 @@ bool Tcp::open(UINT32 ipAddress, UINT16 port,  bool enableVerboseDebugOutput)
 //
 // -- Wir sind der Client, und wollen uns z.B. mit einem Scanner verbinden --
 //
-bool Tcp::open(std::string ipAddress, UINT16 port, bool enableVerboseDebugOutput)
+bool Tcp::open(const std::string& ipAddress, UINT16 port, bool enableVerboseDebugOutput)
 {
-	INT32 result;
+	INT32 result = 0;
 	m_beVerbose = enableVerboseDebugOutput;
     m_last_tcp_msg_received_nsec = 0; // no message received
 //	printInfoMessage("Tcp::open: Setting up input buffer with size=" + convertValueToString(requiredInputBufferSize) + " bytes.", m_beVerbose);
@@ -175,12 +175,12 @@ bool Tcp::open(std::string ipAddress, UINT16 port, bool enableVerboseDebugOutput
 	ROS_INFO_STREAM("sick_scan_xd: Tcp::open: connecting to " << ipAddress << ":"  << port << " ...");
 	printInfoMessage("Tcp::open: Connecting. Target address is " + ipAddress + ":" + toString(port) + ".", m_beVerbose);
 	
-	struct sockaddr_in addr;
-	struct hostent *server = 0;
+	struct sockaddr_in addr{};
+	struct hostent *server = nullptr;
 	server = gethostbyname(ipAddress.c_str());
 	memset(&addr, 0, sizeof(addr));     		// Zero out structure
 	addr.sin_family = AF_INET;
-	if (server != 0 && server->h_addr != 0)
+	if (server != nullptr && server->h_addr != nullptr)
 	{
 #ifdef _MSC_VER
 		memcpy((char*)&addr.sin_addr.s_addr, (char*)server->h_addr, server->h_length);
@@ -231,7 +231,7 @@ bool Tcp::open(std::string ipAddress, UINT16 port, bool enableVerboseDebugOutput
 //
 void Tcp::readThreadFunction(bool& endThread, UINT16& waitTimeMs)
 {
-	INT32 result;
+	INT32 result = 0;
 
 	// Lesen
 	result = readInputData();
@@ -240,7 +240,7 @@ void Tcp::readThreadFunction(bool& endThread, UINT16& waitTimeMs)
 	if (result < 0)
 	{
 		// Verbindung wurde abgebrochen
-		if (m_readThread && m_readThread->m_threadShouldRun == true)
+		if ((m_readThread != nullptr) && m_readThread->m_threadShouldRun)
 		{
 			// Wir sollten eigentlich noch laufen!
 			printInfoMessage("Tcp::readThreadMain: Connection is lost! Read thread terminates now.", m_beVerbose);
@@ -271,7 +271,7 @@ INT32 Tcp::readInputData()
 	INT32 recvMsgSize = 0;
 
 	// Ist die Verbindung offen?
-	if (isOpen() == false)
+	if (!isOpen())
 	{
 		if (rosOk())
 		{
@@ -291,7 +291,7 @@ INT32 Tcp::readInputData()
 	{
 		int ret = -1;
 		do {
-			struct pollfd fd;
+			struct pollfd fd{};
 
 			fd.fd = m_connectionSocket; // your socket handler
 			fd.events = POLLIN;
@@ -307,7 +307,7 @@ INT32 Tcp::readInputData()
 					recvMsgSize = recv(m_connectionSocket, inBuffer, max_length, 0);
 					break;
 			}
-			if (!m_readThread || m_readThread->m_threadShouldRun == false)
+			if ((m_readThread == nullptr) || !m_readThread->m_threadShouldRun)
 			{
 				recvMsgSize = 0;
 				break;
@@ -336,7 +336,7 @@ INT32 Tcp::readInputData()
 		
 		// Falls eine Callback-Funktion definiert ist, rufe sie auf mit den
 		// empfangenen Daten.
-		if (m_readFunction != NULL)
+		if (m_readFunction != nullptr)
 		{
 			// Die Daten an die Callback-Funktion uebergeben
 			UINT32 length_uint32 = (UINT32)recvMsgSize;
@@ -365,7 +365,7 @@ INT32 Tcp::readInputData()
 			ROS_INFO("Tcp::readInputData: Read 0 bytes, connection is lost");
 		}
 		// Informieren?
-		if (m_disconnectFunction != NULL)
+		if (m_disconnectFunction != nullptr)
 		{
 			m_disconnectFunction(m_disconnectFunctionObjPtr);
 		}
@@ -388,10 +388,10 @@ void Tcp::close()
 	printInfoMessage("Tcp::close: Closing Tcp connection.", m_beVerbose);
 
 	// Dem Lese-Thread ein Ende signalisieren
-	if(m_readThread)
+	if(m_readThread != nullptr)
 		m_readThread->m_threadShouldRun = false;
 	// Close TCP socket
-	if (isOpen() == true)
+	if (isOpen())
 	{
 		closeSocket();
 	}
@@ -400,7 +400,7 @@ void Tcp::close()
 		printInfoMessage("Tcp::close: Nothing to do - no open connection? Aborting.", m_beVerbose);
 	}
     // Thread stoppen
-	if(m_readThread)
+	if(m_readThread != nullptr)
 		stopReadThread();
 	m_last_tcp_msg_received_nsec = 0; // no message received
 
@@ -413,7 +413,7 @@ void Tcp::close()
 void Tcp::closeSocket()
 {
 	// Close TCP socket
-	if (isOpen() == true)
+	if (isOpen())
 	{
 		// Verbindung schliessen
 #ifdef _MSC_VER
@@ -432,14 +432,14 @@ void Tcp::closeSocket()
  */
 void Tcp::stopReadThread()
 {
-	if(m_readThread)
+	if(m_readThread != nullptr)
 	{
 		printInfoMessage("Tcp::stopReadThread: Stopping thread.", m_beVerbose);
 		
 		m_readThread->m_threadShouldRun = false;
 		m_readThread->join();
 		delete m_readThread;
-		m_readThread = 0;
+		m_readThread = nullptr;
 		printInfoMessage("Tcp::stopReadThread: Done - Read thread is now closed.", m_beVerbose);
 	}
 }
@@ -493,7 +493,7 @@ std::string Tcp::readString(UINT8 delimiter)
 	const UINT16 maxStringLength = 8192;
 
 	// String fuellen
-	while (m_rxBuffer.size() > 0)
+	while (!m_rxBuffer.empty())
 	{
 		// Es sind noch Daten im Puffer
 		c = m_rxBuffer.front();
@@ -511,7 +511,7 @@ std::string Tcp::readString(UINT8 delimiter)
 	// Ueberlauf der Ausgabe?
 	if (m_rxString.length() > maxStringLength)
 	{
-		if (m_longStringWarningPrinted == false)
+		if (!m_longStringWarningPrinted)
 		{
 			// Die lange Version
 			printWarning("Receive-String has excessive length (" + toString(m_rxString.length()) +" bytes). Clearing string. On serial devices, incorrect bitrate settings may cause this behaviour.");
@@ -526,7 +526,7 @@ std::string Tcp::readString(UINT8 delimiter)
 	}
 
 	// Textmeldung
-	if ((m_beVerbose == true) && (outString.length() > 0))
+	if ((m_beVerbose) && (!outString.empty()))
 	{
 		printInfoMessage("Tcp::readString: Returning string: " + outString, true);
 	}

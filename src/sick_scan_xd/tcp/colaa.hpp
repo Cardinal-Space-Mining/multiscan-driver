@@ -68,7 +68,7 @@ namespace detail
 {
 /// General template which is unimplemented; implemented specializations follow below
 template<typename T>
-inline T read (const std::string& str)
+inline T read (const std::string&  /*str*/)
 {
 //	BOOST_STATIC_ASSERT(sizeof(T) == 0); // must not be instantiated
     return T(); // to avoid additional compiler errors

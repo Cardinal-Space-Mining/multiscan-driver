@@ -8,9 +8,8 @@ File: softwarePLL.cpp
 #include <iostream>
 // #include <chrono>
 // #include <thread>
-#include <math.h>
+#include <cmath>
 #include <iterator>
-#include <iostream>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -30,7 +29,7 @@ public:
     return m_data[index];
   }
 
-  std::size_t size() const
+  [[nodiscard]] std::size_t size() const
   {
     return m_data.size();
   }
@@ -52,7 +51,7 @@ public:
     if (!lineStream && cell.empty())
     {
       // If there was a trailing comma then add an empty element.
-      m_data.push_back("");
+      m_data.emplace_back("");
     }
   }
 
@@ -88,7 +87,7 @@ bool SoftwarePLL::pushIntoFifo(double curTimeStamp, uint32_t curtick)
   return (true);
 }
 
-double SoftwarePLL::extraPolateRelativeTimeStamp(uint32_t tick)
+double SoftwarePLL::extraPolateRelativeTimeStamp(uint32_t tick) const
 {
   int32_t tempTick = 0;
   tempTick = tick - (uint32_t) (0xFFFFFFFF & FirstTick());
@@ -139,7 +138,7 @@ bool SoftwarePLL::updatePLL(uint32_t sec, uint32_t nanoSec, uint32_t curtick)
     double start = sec + nanoSec * 1E-9;
     // bool bRet = true;
 
-    if (false == IsInitialized())
+    if (!IsInitialized())
     {
       pushIntoFifo(start, curtick);
       bool bCheck = this->updateInterpolationSlope();
@@ -149,7 +148,7 @@ bool SoftwarePLL::updatePLL(uint32_t sec, uint32_t nanoSec, uint32_t curtick)
       }
     }
 
-    if (IsInitialized() == false)
+    if (!IsInitialized())
     {
       return (false);
     }
@@ -159,7 +158,7 @@ bool SoftwarePLL::updatePLL(uint32_t sec, uint32_t nanoSec, uint32_t curtick)
 
     bool timeStampVerified = false;
     double delta_time_abs = 0;
-    if (nearSameTimeStamp(relTimeStamp, cmpTimeStamp, delta_time_abs) == true)// if timestamp matches prediction update FIFO
+    if (nearSameTimeStamp(relTimeStamp, cmpTimeStamp, delta_time_abs))// if timestamp matches prediction update FIFO
     {
       timeStampVerified = true;
       pushIntoFifo(start, curtick);
@@ -167,7 +166,7 @@ bool SoftwarePLL::updatePLL(uint32_t sec, uint32_t nanoSec, uint32_t curtick)
       ExtrapolationDivergenceCounter(0);
     }
 
-    if (timeStampVerified == false)
+    if (!timeStampVerified)
     {
       // BEGIN HANDLING Extrapolation divergence
       uint32_t tmp = ExtrapolationDivergenceCounter();
@@ -192,7 +191,7 @@ bool SoftwarePLL::updatePLL(uint32_t sec, uint32_t nanoSec, uint32_t curtick)
 //TODO Kommentare
 bool SoftwarePLL::getCorrectedTimeStamp(uint32_t &sec, uint32_t &nanoSec, uint32_t curtick)
 {
-  if (IsInitialized() == false)
+  if (!IsInitialized())
   {
     return (false);
   }
@@ -216,7 +215,7 @@ bool SoftwarePLL::getCorrectedTimeStamp(uint32_t &sec, uint32_t &nanoSec, uint32
 // converts a system timestamp to lidar ticks, computes the inverse to getCorrectedTimeStamp().
 bool SoftwarePLL::convSystemtimeToLidarTimestamp(uint32_t systemtime_sec, uint32_t systemtime_nanosec, uint32_t& tick)
 {
-  if (IsInitialized() == false)
+  if (!IsInitialized())
   {
     return (false);
   }
@@ -241,7 +240,7 @@ bool SoftwarePLL::convSystemtimeToLidarTimestamp(uint32_t systemtime_sec, uint32
   return (true);
 }
 
-bool SoftwarePLL::nearSameTimeStamp(double relTimeStamp1, double relTimeStamp2, double& delta_time_abs)
+bool SoftwarePLL::nearSameTimeStamp(double relTimeStamp1, double relTimeStamp2, double& delta_time_abs) const
 {
   delta_time_abs = fabs(relTimeStamp1 - relTimeStamp2);
   if (delta_time_abs < AllowedTimeDeviation())
@@ -360,7 +359,7 @@ bool SoftwarePLL::getDemoFileData(std::string fileName, std::vector<uint32_t>& t
 //TODO update testbed
 void SoftwarePLL::testbed()
 {
-  std::cout << "Running testbed for SofwarePLL" << std::endl;
+  std::cout << "Running testbed for SofwarePLL" << '\n';
   uint32_t curtick = 0;
   int cnt = 0;
 
@@ -422,8 +421,7 @@ void SoftwarePLL::testbed()
            corrected ? "MODI." : "OK   ");
   }
 
-  return;
-}
+  }
 
 
 #ifdef softwarePLL_MAINTEST

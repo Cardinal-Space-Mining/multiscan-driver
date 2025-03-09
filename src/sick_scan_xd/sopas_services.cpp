@@ -72,7 +72,7 @@ sick_scan_xd::SopasServices::SopasServices(sick_scan_xd::SickScanCommonTcp* comm
   : m_common_tcp(common_tcp), m_cola_binary(use_cola_binary), m_client_authorization_pw("F4724744")
 {}
 
-sick_scan_xd::SopasServices::~SopasServices() {}
+sick_scan_xd::SopasServices::~SopasServices() = default;
 
 /*!
  * Sends a sopas command and returns the lidar reply.
@@ -83,7 +83,7 @@ sick_scan_xd::SopasServices::~SopasServices() {}
  */
 bool sick_scan_xd::SopasServices::sendSopasAndCheckAnswer(const std::string& sopasCmd, std::vector<unsigned char>& sopasReplyBin, std::string& sopasReplyString)
 {
-  if(m_common_tcp)
+  if(m_common_tcp != nullptr)
   {
     ROS_INFO_STREAM("SopasServices: Sending request \"" << sopasCmd << "\"");
     std::string sopasRequest = std::string("\x02") + sopasCmd + "\x03";
@@ -96,7 +96,7 @@ bool sick_scan_xd::SopasServices::sendSopasAndCheckAnswer(const std::string& sop
     }
     else
     {
-      result = m_common_tcp->sendSopasAndCheckAnswer(sopasRequest.c_str(), &sopasReplyBin, -1);
+      result = m_common_tcp->sendSopasAndCheckAnswer(sopasRequest, &sopasReplyBin, -1);
     }
     if (result != 0)
     {
@@ -212,12 +212,12 @@ bool sick_scan_xd::SopasServices::sendMultiScanStartCmd(const std::string& hostn
   }
   eth_settings_cmd << "sWN ScanDataEthSettings 1";
   imu_eth_settings_cmd << "sWN ImuDataEthSettings 1";
-  for (size_t i = 0; i < ip_tokens.size(); i++)
+  for (const auto & ip_token : ip_tokens)
   {
     eth_settings_cmd << " +";
-    eth_settings_cmd << ip_tokens[i];
+    eth_settings_cmd << ip_token;
     imu_eth_settings_cmd << " +";
-    imu_eth_settings_cmd << ip_tokens[i];
+    imu_eth_settings_cmd << ip_token;
   }
   eth_settings_cmd << " +";
   eth_settings_cmd << port;

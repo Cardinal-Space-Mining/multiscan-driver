@@ -36,7 +36,7 @@
     #define IF_PUBLISH_PROCESS_METRICS(...)
 #endif
 
-#define STATS_PUB_FREQUNCY                  10U
+constexpr int STATS_PUB_FREQUNCY = 10U;
 #define STATS_PUB_DELTA_TIME_MS             (1000U / STATS_PUB_FREQUNCY)
 
 // these are mutually exlusive
@@ -77,8 +77,8 @@
 class MultiscanNode : public rclcpp::Node
 {
 public:
-    MultiscanNode(bool autostart = true);
-    ~MultiscanNode();
+    explicit MultiscanNode(bool autostart = true);
+    ~MultiscanNode() override;
 
     void start();
     void shutdown();
@@ -98,8 +98,8 @@ private:
     {
         std::string lidar_frame_id;
 
-        std::string lidar_hostname = "";
-        std::string driver_hostname = "";
+        std::string lidar_hostname;
+        std::string driver_hostname;
         int lidar_udp_port = 2115;
         // int imu_udp_port = 2115;
         int sopas_tcp_port = 2111;
@@ -262,7 +262,7 @@ MultiscanNode::MultiscanNode(bool autostart) :
             .set__count(1)
             .set__offset(
                 (4 * NUM_CONTIGUOUS_POINT_FIELDS) +
-                (8 * ((POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_TS) > 0)) )
+                (8 * (POINT_FIELD_SECTIONS_ENABLED & POINT_FIELD_ENABLE_TS) > 0)) 
     #endif
     };
 
@@ -332,7 +332,7 @@ void MultiscanNode::run_receiver()
                 sopas_service.sendMultiScanStartCmd(
                     this->config.driver_hostname,
                     this->config.lidar_udp_port,
-                    (2 - this->config.use_msgpack),
+                    (2 - static_cast<int>(this->config.use_msgpack)),
                     true,
                     this->config.lidar_udp_port);
 
@@ -383,7 +383,7 @@ void MultiscanNode::run_receiver()
                             uint32_t num_bytes_required = 0;
                             while(
                                 this->is_running &&
-                                !(parse_success = sick_scansegment_xd::CompactDataParser::ParseSegment(udp_buffer.data(), bytes_received, 0, payload_length_bytes, num_bytes_required)) &&
+                                !(parse_success = sick_scansegment_xd::CompactDataParser::ParseSegment(udp_buffer.data(), bytes_received, nullptr, payload_length_bytes, num_bytes_required)) &&
                                 (udp_recv_timeout < 0 || sick_scansegment_xd::Seconds(recv_start_timestamp, chrono_system_clock::now()) < udp_recv_timeout) ) // read blocking (udp_recv_timeout < 0) or udp_recv_timeout in seconds
                             {
                                 if(num_bytes_required > 1024 * 1024)
@@ -393,7 +393,7 @@ void MultiscanNode::run_receiver()
                                     sick_scansegment_xd::CompactDataParser::ParseSegment(
                                         udp_buffer.data(),
                                         bytes_received,
-                                        0,
+                                        nullptr,
                                         payload_length_bytes,
                                         num_bytes_required,
                                         0.0f,
@@ -484,7 +484,7 @@ void MultiscanNode::run_receiver()
                                 this->imu_pub->publish(msg);
                             }
 
-                            if(segment.scandata.size() > 0)
+                            if(!segment.scandata.empty())
                             {
                                 const size_t idx = segment.segmentIndex;
                                 samples[idx].emplace_front();

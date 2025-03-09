@@ -11,10 +11,10 @@
 
 // Konstruktor.
 // Lock sperren.
-ScopedLock::ScopedLock(Mutex* mutexPtr)
+ScopedLock::ScopedLock(Mutex* mutexPtr) : m_mutexPtr(mutexPtr)
 {
-	m_mutexPtr = mutexPtr;
-	if (m_mutexPtr != NULL)
+	
+	if (m_mutexPtr != nullptr)
 	{
 		m_mutexPtr->lock();
 	}
@@ -24,7 +24,7 @@ ScopedLock::ScopedLock(Mutex* mutexPtr)
 // Lock wieder freigeben.
 ScopedLock::~ScopedLock()
 {
-	if (m_mutexPtr != NULL)
+	if (m_mutexPtr != nullptr)
 	{
 		m_mutexPtr->unlock();
 	}
@@ -41,8 +41,7 @@ Mutex::Mutex()
 }
 
 Mutex::~Mutex()
-{
-}
+= default;
 
 void Mutex::lock()
 {

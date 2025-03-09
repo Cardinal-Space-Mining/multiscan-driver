@@ -71,24 +71,19 @@
 #include "tcp/BasicDatatypes.hpp"
 #include "tcp/tcp.hpp"
 #include <map>  // for std::map
+#include <utility>
 
-#include "tcp/tcp.hpp"
 #include "tcp/errorhandler.hpp"
 #include "tcp/toolbox.hpp"
 #include "tcp/Mutex.hpp"
-#include <assert.h>
+#include <cassert>
 
-SickScanCommonNw::SickScanCommonNw()
-{
-  m_state = CONSTRUCTED;
-  m_beVerbose = false;
-
-}
+SickScanCommonNw::SickScanCommonNw() = default;
 
 SickScanCommonNw::~SickScanCommonNw()
 {
   // Disconnect and shut down receive thread.
-  if (isConnected() == true)
+  if (isConnected())
   {
     // Change from CONNECTED to CONSTRUCTED
     disconnect();
@@ -118,7 +113,7 @@ bool SickScanCommonNw::init(std::string ipAddress,
                             Tcp::DisconnectFunction disconnectFunction,
                             void *obj)
 {
-  m_ipAddress = ipAddress;
+  m_ipAddress = std::move(ipAddress);
   m_portNumber = portNumber;
   m_tcp.setDisconnectCallbackFunction(disconnectFunction, obj);
   return true;
@@ -153,7 +148,7 @@ bool SickScanCommonNw::connect()
   // m_tcp.setReadCallbackFunction(&SickScanCommonNw::readCallbackFunctionS, this);	// , this, _1, _2));
 
   bool success = openTcpConnection();
-  if (success == true)
+  if (success)
   {
     // Check if scanner type matches
     m_state = CONNECTED;
@@ -184,7 +179,7 @@ bool SickScanCommonNw::openTcpConnection()
   //  printInfoMessage("SickScanCommonNw::openTcpConnection: Connecting TCP/IP connection to " + m_ipAddress + ":" + toString(m_portNumber) + " ...", m_beVerbose);
 
   bool success = m_tcp.open(m_ipAddress, m_portNumber, m_beVerbose);
-  if (success == false)
+  if (!success)
   {
     // printError("SickScanCommonNw::openTcpConnection: ERROR: Failed to establish TCP connection, aborting!");
     return false;
@@ -196,7 +191,7 @@ bool SickScanCommonNw::openTcpConnection()
  /**
   * Returns a timestamp in nanoseconds of the last received tcp message (or 0 if no message received)
   */
-uint64_t SickScanCommonNw::getNanosecTimestampLastTcpMessageReceived(void) 
+uint64_t SickScanCommonNw::getNanosecTimestampLastTcpMessageReceived() 
 { 
   return m_tcp.getNanosecTimestampLastTcpMessageReceived(); 
 }
@@ -302,7 +297,7 @@ void SickScanCommonNw::readCallbackFunction(UINT8 *buffer, UINT32 &numOfBytes)
 SopasEventMessage SickScanCommonNw::findFrameInReceiveBuffer()
 {
   UINT32 frameLen = 0;
-  UINT32 i;
+  UINT32 i = 0;
 
   // Depends on protocol...
   if (m_protocol == CoLa_A)
@@ -327,7 +322,7 @@ SopasEventMessage SickScanCommonNw::findFrameInReceiveBuffer()
       {
         // No start found, everything can be discarded
         m_numberOfBytesInReceiveBuffer = 0; // Invalidate buffer
-        return SopasEventMessage(); // No frame found
+        return {}; // No frame found
       }
 
       // Move frame start to index 0
@@ -349,22 +344,22 @@ SopasEventMessage SickScanCommonNw::findFrameInReceiveBuffer()
     if (i >= m_numberOfBytesInReceiveBuffer)
     {
       // No end marker found, so it's not a complete frame (yet)
-      return SopasEventMessage(); // No frame found
+      return {}; // No frame found
     }
 
     // Calculate frame length in byte
     frameLen = i + 1;
 
-    return SopasEventMessage(m_receiveBuffer, CoLa_A, frameLen);
+    return {m_receiveBuffer, CoLa_A, frameLen};
   }
   else if (m_protocol == CoLa_B)
   {
-    UINT32 magicWord;
-    UINT32 payloadlength;
+    UINT32 magicWord = 0;
+    UINT32 payloadlength = 0;
 
     if (m_numberOfBytesInReceiveBuffer < 4)
     {
-      return SopasEventMessage();
+      return {};
     }
     UINT16 pos = 0;
     magicWord = colab::getIntegerFromBuffer<UINT32>(m_receiveBuffer, pos);
@@ -387,7 +382,7 @@ SopasEventMessage SickScanCommonNw::findFrameInReceiveBuffer()
       {
         // No start found, everything can be discarded
         m_numberOfBytesInReceiveBuffer = 0; // Invalidate buffer
-        return SopasEventMessage(); // No frame found
+        return {}; // No frame found
       }
       else
       {
@@ -404,7 +399,7 @@ SopasEventMessage SickScanCommonNw::findFrameInReceiveBuffer()
       // Es sind nicht genug Daten fuer einen Frame
       printInfoMessage("SickScanCommonNw::findFrameInReceiveBuffer: Frame cannot be decoded yet, only " +
                        ::toString(m_numberOfBytesInReceiveBuffer) + " bytes in the buffer.", m_beVerbose);
-      return SopasEventMessage();
+      return {};
     }
 
     // Read length of payload
@@ -422,7 +417,7 @@ SopasEventMessage SickScanCommonNw::findFrameInReceiveBuffer()
           "SickScanCommonNw::findFrameInReceiveBuffer: Frame too big for receive buffer. Frame discarded with length:"
           + ::toString(payloadlength) + ".");
       m_numberOfBytesInReceiveBuffer = 0;
-      return SopasEventMessage();
+      return {};
     }
     if ((payloadlength + 9) > m_numberOfBytesInReceiveBuffer)
     {
@@ -430,7 +425,7 @@ SopasEventMessage SickScanCommonNw::findFrameInReceiveBuffer()
       printInfoMessage(
           "SickScanCommonNw::findFrameInReceiveBuffer: Frame not complete yet. Waiting for the rest of it (" +
           ::toString(payloadlength + 9 - m_numberOfBytesInReceiveBuffer) + " bytes missing).", m_beVerbose);
-      return SopasEventMessage(); // frame not complete
+      return {}; // frame not complete
     }
 
     // Calculate the total frame length in bytes: Len = Frame (9 bytes) + Payload
@@ -441,7 +436,7 @@ SopasEventMessage SickScanCommonNw::findFrameInReceiveBuffer()
     //
     UINT8 temp = 0;
     UINT8 temp_xor = 0;
-    UINT8 checkSum;
+    UINT8 checkSum = 0;
 
     // Read original checksum
     pos = frameLen - 1;
@@ -460,14 +455,14 @@ SopasEventMessage SickScanCommonNw::findFrameInReceiveBuffer()
     {
       printWarning("SickScanCommonNw::findFrameInReceiveBuffer: Wrong checksum, Frame discarded.");
       m_numberOfBytesInReceiveBuffer = 0;
-      return SopasEventMessage();
+      return {};
     }
 
-    return SopasEventMessage(m_receiveBuffer, CoLa_B, frameLen);
+    return {m_receiveBuffer, CoLa_B, frameLen};
   }
 
   // Return empty frame
-  return SopasEventMessage();
+  return {};
 }
 
 
@@ -563,7 +558,7 @@ void SickScanCommonNw::removeFrameFromReceiveBuffer(UINT32 frameLength)
 // ************************* SOPAS FRAME ************************************************** //
 //
 SopasEventMessage::SopasEventMessage() :
-    m_buffer(NULL), m_protocol(CoLa_A), m_frameLength(0)
+    m_buffer(nullptr), m_protocol(CoLa_A), m_frameLength(0)
 {
 }
 
@@ -632,7 +627,7 @@ std::string SopasEventMessage::getCommandString() const
 */
 BYTE *SopasEventMessage::getPayLoad()
 {
-  BYTE *bufferPos = NULL;
+  BYTE *bufferPos = nullptr;
 
   switch (m_protocol)
   {
@@ -659,7 +654,7 @@ BYTE *SopasEventMessage::getPayLoad()
 */
 BYTE *SopasEventMessage::getRawData()
 {
-  BYTE *bufferPos = NULL;
+  BYTE *bufferPos = nullptr;
   bufferPos = &m_buffer[0];
   return bufferPos;
 }

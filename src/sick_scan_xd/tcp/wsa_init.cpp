@@ -6,7 +6,7 @@
 class WSA_AUTO_INIT
 {
 public:
-	WSA_AUTO_INIT() : m_wsastartup(0) {}
+	WSA_AUTO_INIT()  {}
 	~WSA_AUTO_INIT()
 	{
 #if defined _MSC_VER && __ROS_VERSION == 0
@@ -28,12 +28,12 @@ public:
 #endif
 	}
 protected:
-	int m_wsastartup;
+	int m_wsastartup{0};
 };
 
 static WSA_AUTO_INIT s_wsa_auto_init_singleton;
 
-void wsa_init(void)
+void wsa_init()
 {
 	s_wsa_auto_init_singleton.init();
 }

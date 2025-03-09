@@ -37,7 +37,7 @@ private:
 class ScopedLock
 {
 public:
-    ScopedLock(Mutex* mutexPtr);
+    explicit ScopedLock(Mutex* mutexPtr);
     ~ScopedLock();
 private:
     Mutex* m_mutexPtr;

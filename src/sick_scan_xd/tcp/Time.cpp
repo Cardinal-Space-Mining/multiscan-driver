@@ -4,7 +4,7 @@
 
 #include "Time.hpp"
 //#include <sys/time.h>
-#include <time.h>
+#include <ctime>
 #include "toolbox.hpp"	// fuer "::toString()"
 
 
@@ -36,7 +36,7 @@ int gettimeofday(struct timeval* tp, struct timezone* tzp) // Source: see https:
 //
 TimeDuration::TimeDuration()
 {
-	m_duration = 0.0;
+	
 }
 
 
@@ -50,10 +50,6 @@ const UINT64 Time::secondsFrom1900to1970 (2208988800UL);
 Time::Time()
 {
 	set(0.0);
-}
-
-Time::~Time()
-{
 }
 
 //
@@ -131,7 +127,7 @@ void Time::set(UINT64 ntpSeconds, UINT32 ntpFractionalSeconds)
 /**
  * Zeit, in [s].
  */
-double Time::seconds()
+double Time::seconds() const
 {
 	double s = (double)m_time.tv_sec + ((double)m_time.tv_usec / 1000000);
 	return s;
@@ -140,7 +136,7 @@ double Time::seconds()
 //
 // Zeit(spanne), in [ms].
 //
-UINT32 Time::total_milliseconds()
+UINT32 Time::total_milliseconds() const
 {
 	UINT32 ms = (m_time.tv_sec * 1000) + (m_time.tv_usec / 1000);
 	return ms;
@@ -199,7 +195,7 @@ Time Time::operator+(const TimeDuration& dur) const
 Time Time::now()
 {
 	Time t;
-	gettimeofday(&(t.m_time), NULL);
+	gettimeofday(&(t.m_time), nullptr);
 	
 	return t;
 }

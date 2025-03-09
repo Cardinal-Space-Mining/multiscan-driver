@@ -60,19 +60,19 @@
 
 #include <string>	// for std::string
 #include <vector>	// for std::vector
-#include <stdint.h>
+#include <cstdint>
 
 //
 // Standard-Datentypen
 //
-typedef uint64_t      UINT64;
-typedef int32_t       INT32;
-typedef uint32_t      UINT32;
-typedef uint16_t      UINT16;
-typedef int16_t       INT16;
-typedef uint8_t       UINT8;
-typedef int8_t        INT8;
-typedef unsigned char BYTE;
+using UINT64 = uint64_t;
+using INT32 = int32_t;
+using UINT32 = uint32_t;
+using UINT16 = uint16_t;
+using INT16 = int16_t;
+using UINT8 = uint8_t;
+using INT8 = int8_t;
+using BYTE = unsigned char;
 
 #ifndef PI
     #define PI 3.141592653589793238462
@@ -139,17 +139,17 @@ namespace datatypes
 class BasicData
 {
 public:
-    BasicData() {m_datatype = Datatype_Unknown; m_sourceId = Sourcetype_Unknown;}
-    virtual ~BasicData() {}
+    BasicData() = default;
+    virtual ~BasicData() = default;
     
-    UINT16 getDatatype() {return m_datatype;}
-    UINT16 getSourceId() {return m_sourceId;}
+    [[nodiscard]] UINT16 getDatatype() const {return m_datatype;}
+    [[nodiscard]] UINT16 getSourceId() const {return m_sourceId;}
     virtual void setSourceId(UINT16 id) {m_sourceId = id;}
-    virtual UINT32 getUsedMemory() const = 0;
+    [[nodiscard]] virtual UINT32 getUsedMemory() const = 0;
     
 protected:
-    UINT16 m_datatype;		// Typ dieses Datums
-    UINT16 m_sourceId;		// Unique ID of the data source
+    UINT16 m_datatype{Datatype_Unknown};		// Typ dieses Datums
+    UINT16 m_sourceId{Sourcetype_Unknown};		// Unique ID of the data source
 
 };
 

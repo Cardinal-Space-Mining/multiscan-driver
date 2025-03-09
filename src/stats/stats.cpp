@@ -223,7 +223,7 @@ void CoreStats::updateBuff()
     if(validLineCPU(head) && !isdigit(head[3]))
 #endif
     {
-        this->main[REFERENCE] = std::move(this->main[IMMEDIATE]);
+        this->main[REFERENCE] = this->main[IMMEDIATE];
         for(size_t i = 0; i < ~State::TOTAL; i++)
         {
             reader >> this->main[IMMEDIATE][i];
@@ -234,7 +234,7 @@ void CoreStats::updateBuff()
         if(this->individual.empty())    // uninitialized
         {
             while(reader.rdbuf()->sbumpc() != 10);
-            while(reader.rdbuf()->sgetn(head, 4) && validLineCPU(head))
+            while((reader.rdbuf()->sgetn(head, 4) != 0) && validLineCPU(head))
             {
             #if CORE_STATISTICS_STRICT_PARSING > 0
                 if(head[3] != ' ' || isdigit(head[3]))
@@ -251,7 +251,7 @@ void CoreStats::updateBuff()
         }
         else
         {
-            for(size_t core = 0; core < this->individual.size(); core++)
+            for(auto & core : this->individual)
             {
                 while(reader.rdbuf()->sbumpc() != 10);
                 reader.rdbuf()->sgetn(head, 4);
@@ -259,10 +259,10 @@ void CoreStats::updateBuff()
                 if(validLineCPU(head) && head[3] - '0' == core)
             #endif
                 {
-                    this->individual[core][REFERENCE] = std::move(this->individual[core][IMMEDIATE]);
+                    core[REFERENCE] = core[IMMEDIATE];
                     for(size_t i = 0; i < ~State::TOTAL; i++)
                     {
-                        reader >> this->individual[core][IMMEDIATE][i];
+                        reader >> core[IMMEDIATE][i];
                     }
                 }
             }
