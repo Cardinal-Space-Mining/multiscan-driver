@@ -438,7 +438,7 @@ void MultiscanNode::run_receiver()
 
                                             #if POINT_FIELDS_HAVE_TIMESTAMP(MS_DRIVER_POINT_TYPE_FIELDS)
                                                 #define POINT_TS_U64_IDX (POINT_CONTINUOUS_BYTE_LEN / sizeof(uint64_t))
-                                                reinterpret_cast<uint64_t*>(_point_data)[POINT_TS_U64_IDX] = _point.lidar_timestamp_microsec;
+                                                reinterpret_cast<uint64_t*>(_point_data)[POINT_TS_U64_IDX] = _point.lidar_timestamp_microsec;   // since lidar was turned on
                                                 #undef POINT_TS_U64_IDX
                                             #endif
                                             #if POINT_FIELDS_HAVE_REFLECTOR(MS_DRIVER_POINT_TYPE_FIELDS)
