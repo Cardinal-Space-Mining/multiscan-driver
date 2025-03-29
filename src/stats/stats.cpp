@@ -43,7 +43,9 @@
 #include <fstream>
 #include <iostream>
 
+#ifdef HAS_SENSORS
 #include <sensors/sensors.h>
+#endif
 
 #include <unistd.h>
 #ifdef HAS_CPUID
@@ -179,6 +181,7 @@ void getProcessStats(double& resident_set_mb, size_t& num_threads)
     resident_set_mb = rss * page_size_kb / 1000.;
 }
 
+#ifdef HAS_SENSORS
 double readCpuTemp()
 {
     if (sensors_init(NULL) != 0) {
@@ -210,6 +213,7 @@ double readCpuTemp()
     sensors_cleanup();
     return temp_value;
 }
+#endif
 
 ProcessMetrics::ProcessMetrics():
     num_processors{ util::proc::numProcessors() }

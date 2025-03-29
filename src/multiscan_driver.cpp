@@ -617,9 +617,12 @@ void MultiscanNode::publish_stats()
         std_msgs::msg::Float32 f;
         std_msgs::msg::UInt32 u;
 
-        //RCLCPP_INFO(this->get_logger(), "Package Temperature : %f", util::proc::readCpuTemp());
-        f.data = util::proc::readCpuTemp();
-        this->metrics.cpu_temp_pub->publish(f);
+        
+        #ifdef HAS_SENSORS
+            f.data = util::proc::readCpuTemp();
+            this->metrics.cpu_temp_pub->publish(f); 
+            RCLCPP_INFO(this->get_logger(), "Package Temperature : %f", util::proc::readCpuTemp());
+        #endif
 
         f.data = this->metrics.process_utilization.last_cpu_percent;
         this->metrics.avg_cpu_pub->publish(f);
