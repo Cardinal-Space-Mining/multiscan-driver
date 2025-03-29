@@ -163,6 +163,10 @@ MultiscanNode::MultiscanNode(bool autostart) :
     this->metrics.num_threads_pub = this->create_publisher<std_msgs::msg::UInt32>(
                                                         "multiscan_driver/process_metrics/num_threads",
                                                         rclcpp::SensorDataQoS{} );
+    this->metrics.cpu_temp_pub = this->create_publisher<std_msgs::msg::Float32>(
+                                                        "multiscan_driver/process_metrics/cpu_temp",  
+                                                        rclcpp::SensorDataQoS{} );
+    
 #endif
 
     this->scan_fields = MS_DRIVER_POINT_FIELD_LIST;
