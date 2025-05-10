@@ -14,6 +14,9 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
+
+
+#include "stats/stats.hpp"
 #include "util.hpp"
 #include "pub_map.hpp"
 #include "stats/stats.hpp"
@@ -97,7 +100,7 @@ private:
 #if PUBLISH_PROCESS_METRICS
     struct
     {
-        rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr last_cpu_pub, avg_cpu_pub, mem_usage_pub;
+        rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr last_cpu_pub, avg_cpu_pub, mem_usage_pub, cpu_temp_pub;
         rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr num_threads_pub;
 
         util::proc::ProcessMetrics process_utilization;
@@ -159,6 +162,12 @@ MultiscanNode::MultiscanNode(bool autostart) :
     this->metrics.num_threads_pub = this->create_publisher<std_msgs::msg::UInt32>(
                                                         "multiscan_driver/process_metrics/num_threads",
                                                         rclcpp::SensorDataQoS{} );
+#ifdef HAS_SENSORS
+    this->metrics.cpu_temp_pub = this->create_publisher<std_msgs::msg::Float32>(
+                                                        "multiscan_driver/process_metrics/cpu_temp",  
+                                                        rclcpp::SensorDataQoS{} );
+#endif
+    
 #endif
 
     this->scan_fields = MS_DRIVER_POINT_FIELD_LIST;
@@ -523,8 +532,15 @@ void MultiscanNode::publish_stats()
         std_msgs::msg::Float32 f;
         std_msgs::msg::UInt32 u;
 
+        
+        #ifdef HAS_SENSORS
+            f.data = util::proc::readCpuTemp();
+            this->metrics.cpu_temp_pub->publish(f); 
+            RCLCPP_INFO(this->get_logger(), "Package Temperature : %f", util::proc::readCpuTemp());
+        #endif
+
         f.data = this->metrics.process_utilization.last_cpu_percent;
-        this->metrics.last_cpu_pub->publish(f);
+        this->metrics.avg_cpu_pub->publish(f);
         f.data = this->metrics.process_utilization.avg_cpu_percent;
         this->metrics.avg_cpu_pub->publish(f);
         f.data = static_cast<float>(mem_usage);
