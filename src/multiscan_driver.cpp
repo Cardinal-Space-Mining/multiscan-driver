@@ -5,7 +5,6 @@
 #include <vector>
 #include <deque>
 #include <limits>
-#include <iostream>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -163,9 +162,11 @@ MultiscanNode::MultiscanNode(bool autostart) :
     this->metrics.num_threads_pub = this->create_publisher<std_msgs::msg::UInt32>(
                                                         "multiscan_driver/process_metrics/num_threads",
                                                         rclcpp::SensorDataQoS{} );
+#ifdef HAS_SENSORS
     this->metrics.cpu_temp_pub = this->create_publisher<std_msgs::msg::Float32>(
                                                         "multiscan_driver/process_metrics/cpu_temp",  
                                                         rclcpp::SensorDataQoS{} );
+#endif
     
 #endif
 
