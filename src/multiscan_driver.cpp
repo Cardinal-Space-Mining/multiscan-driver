@@ -536,7 +536,7 @@ void MultiscanNode::publish_stats()
         #ifdef HAS_SENSORS
             f.data = util::proc::readCpuTemp();
             this->metrics.cpu_temp_pub->publish(f); 
-            RCLCPP_INFO(this->get_logger(), "Package Temperature : %f", util::proc::readCpuTemp());
+            // RCLCPP_INFO(this->get_logger(), "Package Temperature : %f", util::proc::readCpuTemp());
         #endif
 
         f.data = this->metrics.process_utilization.last_cpu_percent;
