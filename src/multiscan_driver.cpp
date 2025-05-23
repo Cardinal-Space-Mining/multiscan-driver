@@ -30,7 +30,7 @@
 
 #include "point_fields.hpp"
 #ifndef MS_DRIVER_POINT_TYPE_FIELDS
-#define MS_DRIVER_POINT_TYPE_FIELDS     MS_POINT_FIELD_ENABLE_ALL
+#define MS_DRIVER_POINT_TYPE_FIELDS     MS_POINT_FIELD_ENABLE_XYZPTR
 #endif
 #include "point_type.hpp"
 
