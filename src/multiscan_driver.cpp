@@ -229,7 +229,7 @@ void MultiscanNode::run_receiver()
             sick_scan_xd::SopasServices sopas_service{
                 &sopas_tcp,
                 this->config.use_cola_binary };
-            sopas_tcp.init_device();    // TODO: can block indefinitely with valid config that doesn't actually exist
+            sopas_tcp.init_device(3);
             sopas_tcp.setReadTimeOutInMs(static_cast<size_t>(this->config.sopas_read_timeout * 1e3));
 
             if(sopas_tcp.isConnected())

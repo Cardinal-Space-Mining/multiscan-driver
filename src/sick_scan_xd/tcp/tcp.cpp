@@ -16,6 +16,7 @@
 #include <netdb.h>      // for hostent
 #include <iostream>     // for cout
 #ifndef _MSC_VER
+#include <fcntl.h>
 #include <sys/poll.h>
 #include <poll.h>
 #endif
@@ -131,13 +132,13 @@ void Tcp::setReadCallbackFunction(Tcp::ReadFunction readFunction, void* obj)
 //
 // Alternative open-Funktion.
 //
-bool Tcp::open(UINT32 ipAddress, UINT16 port,  bool enableVerboseDebugOutput)
+bool Tcp::open(UINT32 ipAddress, UINT16 port,  bool enableVerboseDebugOutput, int timeoutSeconds)
 {
 	std::string ipAdrStr;
 	
 	ipAdrStr = ipAdrToString(ipAddress);
-				
-	bool result = open(ipAdrStr, port, enableVerboseDebugOutput);
+
+	bool result = open(ipAdrStr, port, enableVerboseDebugOutput, timeoutSeconds);
 	
 	return result;
 }
@@ -148,41 +149,36 @@ bool Tcp::open(UINT32 ipAddress, UINT16 port,  bool enableVerboseDebugOutput)
 //
 // -- Wir sind der Client, und wollen uns z.B. mit einem Scanner verbinden --
 //
-bool Tcp::open(std::string ipAddress, UINT16 port, bool enableVerboseDebugOutput)
+bool Tcp::open(std::string ipAddress, UINT16 port, bool enableVerboseDebugOutput, int timeoutSeconds)
 {
-	INT32 result;
 	m_beVerbose = enableVerboseDebugOutput;
-    m_last_tcp_msg_received_nsec = 0; // no message received
-//	printInfoMessage("Tcp::open: Setting up input buffer with size=" + convertValueToString(requiredInputBufferSize) + " bytes.", m_beVerbose);
-//	m_inBuffer.init(requiredInputBufferSize, m_beVerbose);
-	
+	m_last_tcp_msg_received_nsec = 0;
+
 	printInfoMessage("Tcp::open: Opening connection.", m_beVerbose);
 	wsa_init();
 
-	// Socket erzeugen
-	m_connectionSocket = -1;	// Keine Verbindung
+	m_connectionSocket = -1;
 	{
-		ScopedLock lock(&m_socketMutex);		// Mutex setzen
+		ScopedLock lock(&m_socketMutex);
 		m_connectionSocket = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 	}
-	if (m_connectionSocket  < 0)
+	if (m_connectionSocket < 0)
 	{
-        ROS_ERROR("Tcp::open: socket() failed, aborting.");
+		ROS_ERROR("Tcp::open: socket() failed, aborting.");
 		return false;
 	}
 
-	// Socket ist da. Nun die Verbindung oeffnen.
-	ROS_INFO_STREAM("sick_scan_xd: Tcp::open: connecting to " << ipAddress << ":"  << port << " ...");
+	ROS_INFO_STREAM("sick_scan_xd: Tcp::open: connecting to " << ipAddress << ":" << port << " ...");
 	printInfoMessage("Tcp::open: Connecting. Target address is " + ipAddress + ":" + toString(port) + ".", m_beVerbose);
-	
+
 	struct sockaddr_in addr;
-	struct hostent *server = 0;
-	server = gethostbyname(ipAddress.c_str());
-	memset(&addr, 0, sizeof(addr));     		// Zero out structure
+	struct hostent* server = gethostbyname(ipAddress.c_str());
+	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
-	if (server != 0 && server->h_addr != 0)
+
+	if (server != nullptr && server->h_addr != nullptr)
 	{
-#ifdef _MSC_VER
+#ifdef _WIN32
 		memcpy((char*)&addr.sin_addr.s_addr, (char*)server->h_addr, server->h_length);
 #else
 		bcopy((char*)server->h_addr, (char*)&addr.sin_addr.s_addr, server->h_length);
@@ -192,34 +188,93 @@ bool Tcp::open(std::string ipAddress, UINT16 port, bool enableVerboseDebugOutput
 	{
 		addr.sin_addr.s_addr = inet_addr(ipAddress.c_str());
 	}
-	addr.sin_port = htons(port);				// Host-2-Network byte order
-#ifdef _MSC_VER
-	result = connect(m_connectionSocket, (SOCKADDR*)(&addr), sizeof(addr));
-#else
-	result = connect(m_connectionSocket, (sockaddr*)(&addr), sizeof(addr));
-#endif
-	if (result < 0)
+	addr.sin_port = htons(port);
+
+	int result = 0;
+
+	if (timeoutSeconds >= 0)
 	{
-		// Verbindungsversuch ist fehlgeschlagen
-		std::string text = "Tcp::open: Failed to open TCP connection to " + ipAddress + ":" + toString(port) + ", aborting.";
-#ifdef _MSC_VER
-		char msgbuf[256] = "";
-		int err = WSAGetLastError();
-		FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),	msgbuf,	sizeof(msgbuf), NULL);
-		text = text + " Connect error " + toString(WSAGetLastError()) + std::string(msgbuf);
+		// ----- Non-blocking connect with timeout -----
+#ifdef _WIN32
+		u_long mode = 1;
+		ioctlsocket(m_connectionSocket, FIONBIO, &mode);
+#else
+		int flags = fcntl(m_connectionSocket, F_GETFL, 0);
+		fcntl(m_connectionSocket, F_SETFL, flags | O_NONBLOCK);
 #endif
-		ROS_ERROR_STREAM("" << text);
-		close(); // close socket
-		return false;
+
+		result = connect(m_connectionSocket, (struct sockaddr*)&addr, sizeof(addr));
+#ifdef _WIN32
+		if (result < 0 && WSAGetLastError() != WSAEWOULDBLOCK && WSAGetLastError() != WSAEINPROGRESS)
+#else
+		if (result < 0 && errno != EINPROGRESS)
+#endif
+		{
+			ROS_ERROR("Tcp::open: connect() failed immediately.");
+			close();
+			return false;
+		}
+
+		fd_set writefds;
+		FD_ZERO(&writefds);
+		FD_SET(m_connectionSocket, &writefds);
+		struct timeval tv;
+		tv.tv_sec = timeoutSeconds;
+		tv.tv_usec = 0;
+
+		result = select(m_connectionSocket + 1, nullptr, &writefds, nullptr, &tv);
+		if (result <= 0)
+		{
+			ROS_ERROR("Tcp::open: Connection timeout or select() failed.");
+			close();
+			return false;
+		}
+
+		int so_error = 0;
+		socklen_t len = sizeof(so_error);
+		getsockopt(m_connectionSocket, SOL_SOCKET, SO_ERROR, (char*)&so_error, &len);
+		if (so_error != 0)
+		{
+			ROS_ERROR_STREAM("Tcp::open: Connection failed: " << strerror(so_error));
+			close();
+			return false;
+		}
+
+		// Set socket back to blocking
+#ifdef _WIN32
+		mode = 0;
+		ioctlsocket(m_connectionSocket, FIONBIO, &mode);
+#else
+		fcntl(m_connectionSocket, F_SETFL, flags);
+#endif
+	}
+	else
+	{
+		// ----- Blocking connect -----
+		result = connect(m_connectionSocket, (struct sockaddr*)&addr, sizeof(addr));
+		if (result < 0)
+		{
+#ifdef _WIN32
+			char msgbuf[256] = "";
+			int err = WSAGetLastError();
+			FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+			              NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+			              msgbuf, sizeof(msgbuf), NULL);
+			ROS_ERROR_STREAM("Tcp::open: Blocking connect failed: " << msgbuf);
+#else
+			ROS_ERROR_STREAM("Tcp::open: Blocking connect failed: " << strerror(errno));
+#endif
+			close();
+			return false;
+		}
 	}
 
 	printInfoMessage("Tcp::open: Connection established. Now starting read thread.", m_beVerbose);
 
-	// Empfangsthread starten
 	m_readThread = new SickThread<Tcp, &Tcp::readThreadFunction>("TcpRecvThread");
 	m_readThread->run(this);
-	
-	ROS_INFO_STREAM("sick_scan_xd Tcp::open: connected to " << ipAddress << ":"  << port);
+
+	ROS_INFO_STREAM("sick_scan_xd Tcp::open: connected to " << ipAddress << ":" << port);
 	printInfoMessage("Tcp::open: Done, leaving now.", m_beVerbose);
 
 	return true;

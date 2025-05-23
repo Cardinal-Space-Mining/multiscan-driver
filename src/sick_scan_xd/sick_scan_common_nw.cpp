@@ -139,7 +139,7 @@ bool SickScanCommonNw::setReadCallbackFunction(Tcp::ReadFunction readFunction,
 //
 
 
-bool SickScanCommonNw::connect()
+bool SickScanCommonNw::connect(int timeoutSeconds)
 {
 
   assert (m_state == CONSTRUCTED); // must not be opened or running already
@@ -152,7 +152,7 @@ bool SickScanCommonNw::connect()
   // Set the data input callback for our TCP connection
   // m_tcp.setReadCallbackFunction(&SickScanCommonNw::readCallbackFunctionS, this);	// , this, _1, _2));
 
-  bool success = openTcpConnection();
+  bool success = openTcpConnection(timeoutSeconds);
   if (success == true)
   {
     // Check if scanner type matches
@@ -179,11 +179,11 @@ bool SickScanCommonNw::isConnected()
  *
  * true = Connected, false = no connection
  */
-bool SickScanCommonNw::openTcpConnection()
+bool SickScanCommonNw::openTcpConnection(int timeoutSeconds)
 {
   //  printInfoMessage("SickScanCommonNw::openTcpConnection: Connecting TCP/IP connection to " + m_ipAddress + ":" + toString(m_portNumber) + " ...", m_beVerbose);
 
-  bool success = m_tcp.open(m_ipAddress, m_portNumber, m_beVerbose);
+  bool success = m_tcp.open(m_ipAddress, m_portNumber, m_beVerbose, timeoutSeconds);
   if (success == false)
   {
     // printError("SickScanCommonNw::openTcpConnection: ERROR: Failed to establish TCP connection, aborting!");

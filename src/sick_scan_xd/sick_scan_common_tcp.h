@@ -237,7 +237,7 @@ public:
     void processFrame(rosTime timeStamp, SopasEventMessage &frame);
 
     int reinit(int delay_millisec);
-    int init_device();
+    int init_device(int timeoutSeconds = -1);
     int close_device();
 
     bool isConnected() { return m_nw.isConnected(); }

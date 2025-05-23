@@ -52,7 +52,7 @@ public:
                                void *obj);
 
   /// Connects to a sensor via tcp and reads the device name.
-  bool connect();
+  bool connect(int timeoutSeconds = -1);
 
   /// Returns true if the tcp connection is established.
   bool isConnected();
@@ -73,7 +73,7 @@ public:
 
 private:
   // TCP
-  bool openTcpConnection();
+  bool openTcpConnection(int timeoutSeconds = -1);
 
   void closeTcpConnection();
 

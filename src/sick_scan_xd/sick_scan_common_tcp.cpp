@@ -638,11 +638,11 @@ void SickScanCommonTcp::readCallbackFunction(UINT8 *buffer, UINT32 &numOfBytes)
 }
 
 
-int SickScanCommonTcp::init_device()
+int SickScanCommonTcp::init_device(int timeoutSeconds)
 {
     m_nw.init(this->hostname_, this->port_, disconnectFunctionS, (void*)this);
     m_nw.setReadCallbackFunction(readCallbackFunctionS, (void*)this);
-    m_nw.connect();
+    m_nw.connect(timeoutSeconds);
 
     return ExitSuccess;
 }
