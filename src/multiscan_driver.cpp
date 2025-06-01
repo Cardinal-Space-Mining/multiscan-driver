@@ -218,7 +218,7 @@ void MultiscanNode::run_receiver()
             this->config.use_msgpack ? "MsgPack" : "Compact",
             this->config.use_cola_binary ? "Binary" : "ASCII");
 
-        if(this->udp_recv_socket.Init(/*this->config.lidar_hostname*/ "", this->config.lidar_udp_port))
+        if(this->udp_recv_socket.Init("", this->config.lidar_udp_port))
         {
             RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: UDP socket created successfully");
 
@@ -263,7 +263,7 @@ void MultiscanNode::run_receiver()
                 udp_buffer(RECV_BUFFER_SIZE, 0),
                 udp_msg_start_seq({ 0x02, 0x02, 0x02, 0x02 });
 
-            double udp_recv_timeout = -1.;
+            double udp_recv_timeout = 5.;
             chrono_system_time timestamp_last_udp_recv = chrono_system_clock::now();
 
             using SegmentQueue = std::deque<sick_scansegment_xd::ScanSegmentParserOutput>;
@@ -275,11 +275,12 @@ void MultiscanNode::run_receiver()
             {
                 while(this->is_running && sopas_tcp.isConnected())
                 {
+                    // RCLCPP_DEBUG(this->get_logger(), "[MULTISCAN DRIVER]: Waiting to receive bytes...");
                     size_t bytes_received = this->udp_recv_socket.Receive(
                                                                     udp_buffer,
                                                                     udp_recv_timeout,
                                                                     udp_msg_start_seq );
-                    // RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Received %ld bytes from %d", bytes_received, this->udp_recv_socket.port());
+                    // RCLCPP_DEBUGthis->get_logger(), "[MULTISCAN DRIVER]: Received %ld bytes from %d", bytes_received, this->udp_recv_socket.port());
                     if( bytes_received > udp_msg_start_seq.size() + 8 &&
                         std::equal(
                             udp_buffer.begin(),
@@ -359,6 +360,8 @@ void MultiscanNode::run_receiver()
                             RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: CRC payload check failed.");
                             continue;
                         }
+
+                        // RCLCPP_DEBUG(this->get_logger(), "[MULTISCAN DRIVER]: Processing data...");
 
                         // process
                         {
@@ -446,9 +449,16 @@ void MultiscanNode::run_receiver()
                                                 memcpy(_point_data, &_point, POINT_CONTINUOUS_BYTE_LEN);
 
                                             #if POINT_FIELDS_HAVE_TIMESTAMP(MS_DRIVER_POINT_TYPE_FIELDS)
-                                                #define POINT_TS_U64_IDX (POINT_CONTINUOUS_BYTE_LEN / sizeof(uint64_t))
-                                                reinterpret_cast<uint64_t*>(_point_data)[POINT_TS_U64_IDX] = _point.lidar_timestamp_microsec;   // since lidar was turned on
-                                                #undef POINT_TS_U64_IDX
+                                                memcpy(_point_data + POINT_CONTINUOUS_BYTE_LEN, &_point.lidar_timestamp_microsec, sizeof(_point.lidar_timestamp_microsec));
+                                                // #define POINT_TSL_U32_IDX (POINT_CONTINUOUS_BYTE_LEN / sizeof(uint32_t))
+                                                // #define POINT_TSH_U32_IDX (POINT_TSL_U32_IDX + 1)
+                                                // reinterpret_cast<uint32_t*>(_point_data)[POINT_TSL_U32_IDX] = *reinterpret_cast<const uint32_t*>(&_point.lidar_timestamp_microsec);
+                                                // reinterpret_cast<uint32_t*>(_point_data)[POINT_TSH_U32_IDX] = *(reinterpret_cast<const uint32_t*>(&_point.lidar_timestamp_microsec) + 1);
+                                                // #undef POINT_TSL_U32_IDX
+                                                // #undef POINT_TSH_U32_IDX
+                                                // #define POINT_TS_U64_IDX (POINT_CONTINUOUS_BYTE_LEN / sizeof(uint64_t))
+                                                // reinterpret_cast<uint64_t*>(_point_data)[POINT_TS_U64_IDX] = _point.lidar_timestamp_microsec;   // since lidar was turned on
+                                                // #undef POINT_TS_U64_IDX
                                             #endif
                                             #if POINT_FIELDS_HAVE_REFLECTOR(MS_DRIVER_POINT_TYPE_FIELDS)
                                                 #define POINT_RB_F32_IDX ( (POINT_CONTINUOUS_BYTE_LEN / sizeof(float)) + (POINT_FIELDS_HAVE_TIMESTAMP(MS_DRIVER_POINT_TYPE_FIELDS) * 2) )
@@ -500,6 +510,10 @@ void MultiscanNode::run_receiver()
             {
                 RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: UDP decode loop encountered an exception - what():\n\t%s", e.what());
             }
+            // catch(...)
+            // {
+            //     RCLCPP_INFO(this->get_logger(), "[MULTISCAN_DRIVER]; UDP decode loop threw unknown exception.");
+            // }
 
             if(sopas_tcp.isConnected())
             {

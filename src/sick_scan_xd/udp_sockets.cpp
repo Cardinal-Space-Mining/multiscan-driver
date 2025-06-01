@@ -48,10 +48,10 @@ bool sick_scansegment_xd::UdpReceiverSocketImpl::Init(const std::string& udp_sen
         // setsockopt(m_udp_socket, SOL_SOCKET, SO_BROADCAST, &broadcast_opt, sizeof(broadcast_opt));
         // setsockopt(m_udp_socket, SOL_SOCKET, SO_REUSEADDR, &reuse_addr_opt, sizeof(reuse_addr_opt));
         struct sockaddr_in sim_servaddr = { 0 };
-        if(m_udp_sender.empty())
-            sim_servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-        else
-            sim_servaddr.sin_addr.s_addr = inet_addr(m_udp_sender.c_str()); 
+        // if(m_udp_sender.empty())
+        sim_servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+        // else
+        //     sim_servaddr.sin_addr.s_addr = inet_addr(m_udp_sender.c_str()); 
         sim_servaddr.sin_family = AF_INET;
         sim_servaddr.sin_port = htons(m_udp_port);
         ROS_INFO_STREAM("UdpReceiverSocketImpl: udp socket created, binding to port " << ntohs(sim_servaddr.sin_port) << " ... ");
@@ -62,6 +62,14 @@ bool sick_scansegment_xd::UdpReceiverSocketImpl::Init(const std::string& udp_sen
             m_udp_socket = INVALID_SOCKET;
             return false;
         }
+
+        // sockaddr_in bound_addr;
+        // socklen_t len = sizeof(bound_addr);
+        // getsockname(m_udp_socket, (sockaddr*)&bound_addr, &len);
+        // char ip_str[INET_ADDRSTRLEN];
+        // inet_ntop(AF_INET, &bound_addr.sin_addr, ip_str, sizeof(ip_str));
+        // ROS_INFO_STREAM("Socket bound to IP: " << ip_str << ", Port: " << ntohs(bound_addr.sin_port));
+
         return true;
     }
     catch (std::exception & e)
