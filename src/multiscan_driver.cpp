@@ -1,10 +1,10 @@
-#include <memory>
-#include <mutex>
-#include <thread>
-#include <atomic>
-#include <vector>
 #include <deque>
+#include <mutex>
+#include <atomic>
+#include <memory>
 #include <limits>
+#include <thread>
+#include <vector>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -14,12 +14,9 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
-
-
-#include "stats/stats.hpp"
 #include "util.hpp"
 #include "pub_map.hpp"
-#include "stats/stats.hpp"
+#include "csm_metrics/stats.hpp"
 
 #include "sick_scan_xd/udp_sockets.h"
 #include "sick_scan_xd/msgpack_parser.h"
@@ -42,14 +39,19 @@
 #endif
 
 #if PUBLISH_PROCESS_METRICS
-    #define IF_PUBLISH_PROCESS_METRICS(x) x
+    #define IF_PUBLISH_PROCESS_METRICS(...) __VA_ARGS__
 #else
     #define IF_PUBLISH_PROCESS_METRICS(...)
 #endif
 
 
-class MultiscanNode : public rclcpp::Node
+class MultiscanNode :
+    public rclcpp::Node
 {
+    using ImuMsg = sensor_msgs::msg::Imu;
+    using PointCloudMsg = sensor_msgs::msg::PointCloud2;
+    using ProcessStatsMsg = csm_metrics::msg::ProcessStats;
+
 public:
     MultiscanNode(bool autostart = true);
     ~MultiscanNode();
@@ -87,28 +89,20 @@ private:
     }
     config;
 
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr scan_pub;
-    rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub;
+    rclcpp::Publisher<PointCloudMsg>::SharedPtr scan_pub;
+    rclcpp::Publisher<ImuMsg>::SharedPtr imu_pub;
 
-    sensor_msgs::msg::PointCloud2::_fields_type scan_fields;
+    PointCloudMsg::_fields_type scan_fields;
 
     sick_scansegment_xd::UdpReceiverSocketImpl udp_recv_socket;
 
     std::thread recv_thread;
-    std::atomic_bool is_running = true;
+    std::atomic<bool> is_running = true;
 
 #if PUBLISH_PROCESS_METRICS
-    struct
-    {
-        rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr last_cpu_pub, avg_cpu_pub, mem_usage_pub, cpu_temp_pub;
-        rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr num_threads_pub;
-
-        util::proc::ProcessMetrics process_utilization;
-        std::thread thread;
-
-        std::chrono::system_clock::time_point next_pub_ts;
-    }
-    metrics;
+    rclcpp::Publisher<ProcessStatsMsg>::SharedPtr proc_stats_pub;
+    rclcpp::TimerBase::SharedPtr stats_pub_timer;
+    csm::metrics::ProcessStats process_stats;
 #endif
 
 };
@@ -144,30 +138,25 @@ MultiscanNode::MultiscanNode(bool autostart) :
     util::declare_param(this, "error_restart_timeout", this->config.error_restart_timeout, 3.);
     util::declare_param(this, "max_segment_buffers", this->config.max_segment_buffering, 3);
 
-    this->scan_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-                                                "lidar_scan", rclcpp::SensorDataQoS{} );
-    this->imu_pub = this->create_publisher<sensor_msgs::msg::Imu>(
-                                                "lidar_imu", rclcpp::SensorDataQoS{} );
+    this->scan_pub = this->create_publisher<PointCloudMsg>(
+        "lidar_scan",
+        rclcpp::SensorDataQoS{} );
+    this->imu_pub = this->create_publisher<ImuMsg>(
+        "lidar_imu",
+        rclcpp::SensorDataQoS{} );
 
 #if PUBLISH_PROCESS_METRICS
-    this->metrics.last_cpu_pub = this->create_publisher<std_msgs::msg::Float32>(
-                                                        "multiscan_driver/process_metrics/last_cpu_percent",
-                                                        rclcpp::SensorDataQoS{} );
-    this->metrics.avg_cpu_pub = this->create_publisher<std_msgs::msg::Float32>(
-                                                        "multiscan_driver/process_metrics/avg_cpu_percent",
-                                                        rclcpp::SensorDataQoS{} );
-    this->metrics.mem_usage_pub = this->create_publisher<std_msgs::msg::Float32>(
-                                                        "multiscan_driver/process_metrics/mem_usage_mb",
-                                                        rclcpp::SensorDataQoS{} );
-    this->metrics.num_threads_pub = this->create_publisher<std_msgs::msg::UInt32>(
-                                                        "multiscan_driver/process_metrics/num_threads",
-                                                        rclcpp::SensorDataQoS{} );
-#ifdef HAS_SENSORS
-    this->metrics.cpu_temp_pub = this->create_publisher<std_msgs::msg::Float32>(
-                                                        "multiscan_driver/process_metrics/cpu_temp",  
-                                                        rclcpp::SensorDataQoS{} );
-#endif
-    
+    this->proc_stats_pub = this->create_publisher<ProcessStatsMsg>(
+        "multiscan_driver/process_stats",
+        rclcpp::SensorDataQoS{} );
+    this->stats_pub_timer = this->create_wall_timer(
+        std::chrono::milliseconds(STATS_PUB_DELTA_TIME_MS),
+        [this]()
+        {
+            this->process_stats.update();
+            this->proc_stats_pub->publish(
+                this->process_stats.toMsg() );
+        } );
 #endif
 
     this->scan_fields = MS_DRIVER_POINT_FIELD_LIST;
@@ -190,12 +179,6 @@ void MultiscanNode::start()
     {
         this->recv_thread = std::thread{ &MultiscanNode::run_receiver, this };
     }
-#if PUBLISH_PROCESS_METRICS
-    if(!this->metrics.thread.joinable())
-    {
-        this->metrics.thread = std::thread{ &MultiscanNode::publish_stats, this };
-    }
-#endif
 }
 
 void MultiscanNode::run_receiver()
@@ -530,43 +513,6 @@ void MultiscanNode::run_receiver()
     }
 }
 
-#if PUBLISH_PROCESS_METRICS
-void MultiscanNode::publish_stats()
-{
-    this->metrics.next_pub_ts = std::chrono::system_clock::now();
-
-    while(this->is_running)
-    {
-        this->metrics.process_utilization.update();
-
-        double mem_usage;
-        size_t num_threads;
-        util::proc::getProcessStats(mem_usage, num_threads);
-
-        std_msgs::msg::Float32 f;
-        std_msgs::msg::UInt32 u;
-
-        
-        #ifdef HAS_SENSORS
-            f.data = util::proc::readCpuTemp();
-            this->metrics.cpu_temp_pub->publish(f); 
-            // RCLCPP_INFO(this->get_logger(), "Package Temperature : %f", util::proc::readCpuTemp());
-        #endif
-
-        f.data = this->metrics.process_utilization.last_cpu_percent;
-        this->metrics.avg_cpu_pub->publish(f);
-        f.data = this->metrics.process_utilization.avg_cpu_percent;
-        this->metrics.avg_cpu_pub->publish(f);
-        f.data = static_cast<float>(mem_usage);
-        this->metrics.mem_usage_pub->publish(f);
-        u.data = static_cast<uint32_t>(num_threads);
-        this->metrics.num_threads_pub->publish(u);
-
-        this->metrics.next_pub_ts += std::chrono::milliseconds{ STATS_PUB_DELTA_TIME_MS };
-        std::this_thread::sleep_until(this->metrics.next_pub_ts);
-    }
-}
-#endif
 
 void MultiscanNode::shutdown()
 {
@@ -576,12 +522,6 @@ void MultiscanNode::shutdown()
         this->udp_recv_socket.ForceStop();
         this->recv_thread.join();
     }
-#if PUBLISH_PROCESS_METRICS
-    if(this->metrics.thread.joinable())
-    {
-        this->metrics.thread.join();
-    }
-#endif
 }
 
 

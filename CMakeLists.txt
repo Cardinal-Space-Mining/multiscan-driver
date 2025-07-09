@@ -27,6 +27,7 @@ find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(csm_metrics REQUIRED)
 
 
 include_directories(${EIGEN3_INCLUDE_DIRS})
@@ -57,35 +58,22 @@ add_library(scansegment_xd STATIC
   "src/sick_scan_xd/tcp/wsa_init.cpp")
 ament_target_dependencies(scansegment_xd)
 
-add_library(stats STATIC "src/stats/stats.cpp")
 
-file(WRITE ${CMAKE_BINARY_DIR}/test_sensors.cpp "#include <sensors/sensors.h> \n
-                                                  int main() {return 0;}")
-try_compile(HAS_SENSORS ${CMAKE_BINARY_DIR} ${CMAKE_BINARY_DIR}/test_sensors.cpp)
-file(REMOVE ${CMAKE_BINARY_DIR}/test_sensors.cpp)
-if(${HAS_SENSORS})
-  add_compile_definitions(HAS_SENSORS)
-  target_link_libraries(stats sensors)
-  message("HAS_SENSORS")
-else()
-  message("DOES NOT HAVE SENSORS")
-endif()
-
-ament_target_dependencies(stats)
-
-add_executable(multiscan_driver "src/multiscan_driver.cpp")
+add_executable(multiscan_driver
+  "src/multiscan_driver.cpp" )
 target_link_libraries(multiscan_driver
   scansegment_xd
-  stats
-  Eigen3::Eigen)
+  csm_metrics::stats
+  Eigen3::Eigen )
 ament_target_dependencies(multiscan_driver
   rclcpp
   std_msgs
   sensor_msgs
-  tf2_ros)
+  tf2_ros
+  csm_metrics )
 target_include_directories(multiscan_driver PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+  $<INSTALL_INTERFACE:include/${PROJECT_NAME}> )
 target_compile_features(multiscan_driver PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
 
 install(TARGETS multiscan_driver
@@ -103,5 +91,10 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-ament_export_dependencies(rclcpp std_msgs sensor_msgs tf2_ros)
+ament_export_dependencies(
+  rclcpp
+  std_msgs
+  sensor_msgs
+  tf2_ros
+  csm_metrics )
 ament_package()
