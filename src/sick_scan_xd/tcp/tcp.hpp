@@ -36,8 +36,8 @@ public:
 	~Tcp();
 
 	// Opens the connection.
-	bool open(std::string ipAddress, UINT16 port, bool enableVerboseDebugOutput = false);
-	bool open(UINT32 ipAddress, UINT16 port, bool enableVerboseDebugOutput = false);
+	bool open(std::string ipAddress, UINT16 port, bool enableVerboseDebugOutput = false, int timeoutSeconds = -1);
+	bool open(UINT32 ipAddress, UINT16 port, bool enableVerboseDebugOutput = false, int timeoutSeconds = -1);
 	void close();											// Closes the connection, if it was open.
 	bool isOpen();	// "True" if a connection is currently open.
 	bool write(UINT8* buffer, UINT32 numberOfBytes);		// Writes numberOfBytes bytes to the open connection.
