@@ -473,10 +473,10 @@ int sick_scansegment_xd::CompactDataParser::GetLayerIDfromElevation(float layer_
         static std::map<int,int> elevation_layerid_map;
         if (elevation_layerid_map.find(layer_elevation_mdeg) == elevation_layerid_map.end())
         {
-        elevation_layerid_map[layer_elevation_mdeg] = elevation_layerid_map.size() + 1; // Add new layer
-        int layerid = 0;
-        for(std::map<int,int>::iterator iter_layerid_map = elevation_layerid_map.begin(); iter_layerid_map != elevation_layerid_map.end(); iter_layerid_map++)
-            iter_layerid_map->second = layerid++; // Resort by ascending elevation
+            elevation_layerid_map[layer_elevation_mdeg] = elevation_layerid_map.size() + 1; // Add new layer
+            int layerid = 0;
+            for(std::map<int,int>::iterator iter_layerid_map = elevation_layerid_map.begin(); iter_layerid_map != elevation_layerid_map.end(); iter_layerid_map++)
+                iter_layerid_map->second = layerid++; // Resort by ascending elevation
         }
         return elevation_layerid_map[layer_elevation_mdeg];
     }
