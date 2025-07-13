@@ -14,9 +14,11 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
+#include "csm_metrics/stats.hpp"
+#include "csm_metrics/profiling.hpp"
+
 #include "util.hpp"
 #include "pub_map.hpp"
-#include "csm_metrics/stats.hpp"
 
 #include "sick_scan_xd/udp_sockets.h"
 #include "sick_scan_xd/msgpack_parser.h"
@@ -201,6 +203,8 @@ void MultiscanNode::run_receiver()
             this->config.use_msgpack ? "MsgPack" : "Compact",
             this->config.use_cola_binary ? "Binary" : "ASCII");
 
+        PROFILING_NOTIFY(init_connection);
+
         if(this->udp_recv_socket.Init("", this->config.lidar_udp_port))
         {
             RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: UDP socket created successfully");
@@ -241,6 +245,8 @@ void MultiscanNode::run_receiver()
                 // TODO: restart
             }
 
+            PROFILING_NOTIFY(init_connection);
+
             constexpr size_t RECV_BUFFER_SIZE = 64 * 1024;  // from sick_scansegment_xd
             std::vector<uint8_t>
                 udp_buffer(RECV_BUFFER_SIZE, 0),
@@ -258,6 +264,10 @@ void MultiscanNode::run_receiver()
             {
                 while(this->is_running && sopas_tcp.isConnected())
                 {
+                    PROFILING_SYNC();
+                    PROFILING_FLUSH();
+                    PROFILING_NOTIFY(receive_bytes);
+
                     // RCLCPP_DEBUG(this->get_logger(), "[MULTISCAN DRIVER]: Waiting to receive bytes...");
                     size_t bytes_received = this->udp_recv_socket.Receive(
                                                                     udp_buffer,
@@ -321,6 +331,7 @@ void MultiscanNode::run_receiver()
                             if(!parse_success)
                             {
                                 RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Compact payload parse failed.");
+                                PROFILING_NOTIFY(receive_bytes);
                                 continue;
                             }
                             bytes_to_receive = (uint32_t)(payload_length_bytes + sizeof(uint32_t)); // payload + (4 byte CRC)
@@ -341,10 +352,13 @@ void MultiscanNode::run_receiver()
                         if(u32PayloadCRC != u32MsgPackCRC)
                         {
                             RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: CRC payload check failed.");
+                            PROFILING_NOTIFY(receive_bytes);
                             continue;
                         }
 
                         // RCLCPP_DEBUG(this->get_logger(), "[MULTISCAN DRIVER]: Processing data...");
+
+                        PROFILING_NOTIFY2(receive_bytes, parse_segment);
 
                         // process
                         {
@@ -354,6 +368,7 @@ void MultiscanNode::run_receiver()
                                 if(!sick_scansegment_xd::MsgPackParser::Parse(udp_buffer, recv_start_timestamp, segment, true, false))
                                 {
                                     RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Msgpack parse failed.");
+                                    PROFILING_NOTIFY(parse_segment);
                                     continue;
                                 }
                             }
@@ -362,13 +377,18 @@ void MultiscanNode::run_receiver()
                                 if(!sick_scansegment_xd::CompactDataParser::Parse(udp_buffer, recv_start_timestamp, segment, 0, true, false))
                                 {
                                     RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Compact parse failed.");
+                                    PROFILING_NOTIFY(parse_segment);
                                     continue;
                                 }
                             }
 
+                            PROFILING_NOTIFY(parse_segment);
+
                             // export imu if available
                             if(segment.imudata.valid)
                             {
+                                PROFILING_NOTIFY(export_imu);
+
                                 sensor_msgs::msg::Imu msg;
 
                                 msg.header.stamp.sec = segment.timestamp_sec;
@@ -389,10 +409,14 @@ void MultiscanNode::run_receiver()
                                 msg.orientation.z = segment.imudata.orientation_z;
 
                                 this->imu_pub->publish(msg);
+
+                                PROFILING_NOTIFY(export_imu);
                             }
 
                             if(segment.scandata.size() > 0)
                             {
+                                PROFILING_NOTIFY(queue_sample);
+
                                 const size_t idx = segment.segmentIndex;
                                 samples[idx].emplace_front();
                                 if(samples[idx].size() > static_cast<size_t>(this->config.max_segment_buffering))
@@ -401,10 +425,14 @@ void MultiscanNode::run_receiver()
                                 }
                                 swapSegmentsNoIMU(samples[idx].front(), segment);
                                 filled_segments |= 1 << idx;
+
+                                PROFILING_NOTIFY(queue_sample);
                             }
 
                             if(filled_segments >= (1 << MS100_SEGMENTS_PER_FRAME) - 1)
                             {
+                                PROFILING_NOTIFY(export_cloud);
+
                                 // assemble and publish pc
                                 sensor_msgs::msg::PointCloud2 scan;
                                 constexpr size_t MS100_NOMINAL_POINTS_PER_SCAN = MS100_POINTS_PER_SEGMENT_ECHO * MS100_SEGMENTS_PER_FRAME;  // single echo
@@ -466,6 +494,8 @@ void MultiscanNode::run_receiver()
 
                                 this->scan_pub->publish(scan);
                                 filled_segments = 0;
+
+                                PROFILING_NOTIFY(export_cloud);
                             }
                         }
 
@@ -481,6 +511,10 @@ void MultiscanNode::run_receiver()
                         {
                             udp_recv_timeout = this->config.udp_receive_timeout; // receive non-blocking with timeout
                         }
+                    }
+                    else
+                    {
+                        PROFILING_NOTIFY(receive_bytes);
                     }
                 }
 
@@ -503,6 +537,11 @@ void MultiscanNode::run_receiver()
                 sopas_service.sendAuthorization();
                 sopas_service.sendMultiScanStopCmd(true);
             }
+        }
+        else
+        {
+            PROFILING_NOTIFY(init_connection);
+            PROFILING_FLUSH();
         }
 
         if(this->is_running)
@@ -528,7 +567,15 @@ void MultiscanNode::shutdown()
 int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<MultiscanNode>());
+
+    auto node = std::make_shared<MultiscanNode>(false);
+    PROFILING_INIT(*node);
+    node->start();
+
+    rclcpp::spin(node);
+
+    node->shutdown();
+    PROFILING_DEINIT();
     rclcpp::shutdown();
 
     return 0;

@@ -64,6 +64,7 @@ add_executable(multiscan_driver
 target_link_libraries(multiscan_driver
   scansegment_xd
   csm_metrics::stats
+  csm_metrics::profiling
   Eigen3::Eigen )
 ament_target_dependencies(multiscan_driver
   rclcpp
