@@ -83,14 +83,15 @@
 // #include "config.h"
 #include "msgpack_parser.h"
 #include "sick_ros_wrapper.h"
+#include <numbers>
 
 // /** normalizes an angle to [ -PI , +PI ] */
 // static float normalizeAngle(float angle_rad)
 // {
-// 	while (angle_rad > (float)(M_PI))
-// 		angle_rad -= (float)(2.0 * M_PI);
-// 	while (angle_rad < (float)(-M_PI))
-// 		angle_rad += (float)(2.0 * M_PI);
+// 	while (angle_rad > (float)(std::numbers::pi))
+// 		angle_rad -= (float)(2.0 * std::numbers::pi);
+// 	while (angle_rad < (float)(-std::numbers::pi))
+// 		angle_rad += (float)(2.0 * std::numbers::pi);
 // 	return angle_rad;
 // }
 
@@ -405,7 +406,7 @@ public:
 		}
 		return s.str();
 	}
-    float rad2deg(float angle) const { return angle * (float)(180.0 / M_PI); }
+    float rad2deg(float angle) const { return angle * (float)(180.0 / std::numbers::pi); }
 	std::string printRad2Deg(void)
 	{
 		std::stringstream s;

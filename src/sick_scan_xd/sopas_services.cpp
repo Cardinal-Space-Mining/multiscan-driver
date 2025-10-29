@@ -61,6 +61,7 @@
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+#include <numbers>
 
 #include "sopas_services.h"
 #include "sick_ros_wrapper.h"
@@ -511,7 +512,7 @@ bool sick_scan_xd::SopasServices::sendMultiScanStopCmd(bool imu_enable)
 //         parameter << filter_enabled;
 //         for(int n = 1; n < 5; n++) // <azimuth_start> <azimuth_stop> <elevation_start> <elevation_stop>
 //         {
-//           // float angle_deg = (convertHexStringToFloat(sopasToken[n], SCANSEGMENT_XD_SOPAS_ARGS_BIG_ENDIAN) * 180.0 / M_PI);
+//           // float angle_deg = (convertHexStringToFloat(sopasToken[n], SCANSEGMENT_XD_SOPAS_ARGS_BIG_ENDIAN) * 180.0 / std::numbers::pi);
 //           float angle_deg = convertHexStringToAngleDeg(sopasToken[n], SCANSEGMENT_XD_SOPAS_ARGS_BIG_ENDIAN);
 //           parameter << " " << angle_deg;
 //           if(filter_enabled)
@@ -569,10 +570,10 @@ bool sick_scan_xd::SopasServices::sendMultiScanStopCmd(bool imu_enable)
 //   }
 //   if(multiscan_angles_deg.size() == 4) // otherwise LFPangleRangeFilter disabled (-> use configured default values)
 //   {
-//     msgpack_validator_filter_settings.msgpack_validator_azimuth_start = (multiscan_angles_deg[0] * M_PI / 180);
-//     msgpack_validator_filter_settings.msgpack_validator_azimuth_end = (multiscan_angles_deg[1] * M_PI / 180);
-//     msgpack_validator_filter_settings.msgpack_validator_elevation_start = (multiscan_angles_deg[2] * M_PI / 180);
-//     msgpack_validator_filter_settings.msgpack_validator_elevation_end = (multiscan_angles_deg[3] * M_PI / 180);
+//     msgpack_validator_filter_settings.msgpack_validator_azimuth_start = (multiscan_angles_deg[0] * std::numbers::pi / 180);
+//     msgpack_validator_filter_settings.msgpack_validator_azimuth_end = (multiscan_angles_deg[1] * std::numbers::pi / 180);
+//     msgpack_validator_filter_settings.msgpack_validator_elevation_start = (multiscan_angles_deg[2] * std::numbers::pi / 180);
+//     msgpack_validator_filter_settings.msgpack_validator_elevation_end = (multiscan_angles_deg[3] * std::numbers::pi / 180);
 //   }
 //   if(layer_active_vector.size() == 16)  // otherwise LFPlayerFilter disabled (-> use configured default values)
 //   {
@@ -642,7 +643,7 @@ bool sick_scan_xd::SopasServices::sendMultiScanStopCmd(bool imu_enable)
 //     sopas_parameter << filter_enabled;
 //     for(int n = 0; n < angle_deg.size(); n++)
 //     {
-//       // sopas_parameter << " " << convertFloatToHexString(angle_deg[n] * M_PI / 180, SCANSEGMENT_XD_SOPAS_ARGS_BIG_ENDIAN);
+//       // sopas_parameter << " " << convertFloatToHexString(angle_deg[n] * std::numbers::pi / 180, SCANSEGMENT_XD_SOPAS_ARGS_BIG_ENDIAN);
 //       sopas_parameter << " " << convertAngleDegToHexString(angle_deg[n], SCANSEGMENT_XD_SOPAS_ARGS_BIG_ENDIAN);
 //     }
 //     sopas_parameter << " " << beam_increment;
