@@ -47,7 +47,7 @@ bool sick_scansegment_xd::UdpReceiverSocketImpl::Init(const std::string& udp_sen
         // #endif
         // setsockopt(m_udp_socket, SOL_SOCKET, SO_BROADCAST, &broadcast_opt, sizeof(broadcast_opt));
         // setsockopt(m_udp_socket, SOL_SOCKET, SO_REUSEADDR, &reuse_addr_opt, sizeof(reuse_addr_opt));
-        struct sockaddr_in sim_servaddr = { 0 };
+        struct sockaddr_in sim_servaddr{};
         // if(m_udp_sender.empty())
         sim_servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
         // else
@@ -200,7 +200,7 @@ bool sick_scansegment_xd::UdpSenderSocketImpl::Send(std::vector<uint8_t>& messag
     {
         try
         {
-            struct sockaddr_in sim_servaddr = { 0 };
+            struct sockaddr_in sim_servaddr{};
             if(m_server_address.empty())
             {
                 sim_servaddr.sin_addr.s_addr = htonl(INADDR_BROADCAST);

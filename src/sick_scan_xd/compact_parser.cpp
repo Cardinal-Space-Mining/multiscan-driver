@@ -56,6 +56,7 @@
 #include "compact_parser.h"
 #include "udp_receiver.h"
 #include "sick_ros_wrapper.h"
+#include <numbers>
 
 #define TARGET_IS_LITTLE_ENDIAN 1
 
@@ -448,7 +449,7 @@ void sick_scansegment_xd::CompactDataParser::SetLayerElevationTable(const std::v
 */
 int sick_scansegment_xd::CompactDataParser::GetLayerIDfromElevation(float layer_elevation_rad) // layer_elevation in radians
 {
-    int layer_elevation_mdeg = (int)std::lround(layer_elevation_rad * 180000 / M_PI);
+    int layer_elevation_mdeg = (int)std::lround(layer_elevation_rad * 180000 / std::numbers::pi);
     if (!s_layer_elevation_table_mdeg.empty())
     {
         int layer_idx = 0;
@@ -997,10 +998,10 @@ bool sick_scansegment_xd::CompactDataParser::Parse(const std::vector<uint8_t>& p
     {
     uint64_t timestamp_microsec_azi = 0;
     double azimuth_aperture = 0;
-    if (getMaxAzimuthApertureWithinCube(result.scandata, 0.5f, 1.5f, -1.0f, +1.0f, -1.0f, +1.0f, -M_PI, +M_PI, azimuth_aperture, timestamp_microsec_azi))
+    if (getMaxAzimuthApertureWithinCube(result.scandata, 0.5f, 1.5f, -1.0f, +1.0f, -1.0f, +1.0f, -std::numbers::pi, +std::numbers::pi, azimuth_aperture, timestamp_microsec_azi))
     {
         std::ofstream csv_ostream("/tmp/imu_latency.csv", std::ios::app);
-        csv_ostream << timestamp_microsec_azi << ";" << std::fixed << std::setprecision(3) << (azimuth_aperture * 180 / M_PI) << ";" << "\n";
+        csv_ostream << timestamp_microsec_azi << ";" << std::fixed << std::setprecision(3) << (azimuth_aperture * 180 / std::numbers::pi) << ";" << "\n";
     }
     }
 #endif // EXPORT_MEASUREMENT_AZIMUTH_ACCELERATION_CSV
