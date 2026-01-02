@@ -1,3 +1,42 @@
+/*******************************************************************************
+*   Copyright (C) 2024-2026 Cardinal Space Mining Club                         *
+*                                                                              *
+*                                 ;xxxxxxx:                                    *
+*                                ;$$$$$$$$$       ...::..                      *
+*                                $$$$$$$$$$x   .:::::::::::..                  *
+*                             x$$$$$$$$$$$$$$::::::::::::::::.                 *
+*                         :$$$$$&X;      .xX:::::::::::::.::...                *
+*                 .$$Xx++$$$$+  :::.     :;:   .::::::.  ....  :               *
+*                :$$$$$$$$$  ;:      ;xXXXXXXXx  .::.  .::::. .:.              *
+*               :$$$$$$$$: ;      ;xXXXXXXXXXXXXx: ..::::::  .::.              *
+*              ;$$$$$$$$ ::   :;XXXXXXXXXXXXXXXXXX+ .::::.  .:::               *
+*               X$$$$$X : +XXXXXXXXXXXXXXXXXXXXXXXX; .::  .::::.               *
+*                .$$$$ :xXXXXXXXXXXXXXXXXXXXXXXXXXXX.   .:::::.                *
+*                 X$$X XXXXXXXXXXXXXXXXXXXXXXXXXXXXx:  .::::.                  *
+*                 $$$:.XXXXXXXXXXXXXXXXXXXXXXXXXXX  ;; ..:.                    *
+*                 $$& :XXXXXXXXXXXXXXXXXXXXXXXX;  +XX; X$$;                    *
+*                 $$$: XXXXXXXXXXXXXXXXXXXXXX; :XXXXX; X$$;                    *
+*                 X$$X XXXXXXXXXXXXXXXXXXX; .+XXXXXXX; $$$                     *
+*                 $$$$ ;XXXXXXXXXXXXXXX+  +XXXXXXXXx+ X$$$+                    *
+*               x$$$$$X ;XXXXXXXXXXX+ :xXXXXXXXX+   .;$$$$$$                   *
+*              +$$$$$$$$ ;XXXXXXx;;+XXXXXXXXX+    : +$$$$$$$$                  *
+*               +$$$$$$$$: xXXXXXXXXXXXXXX+      ; X$$$$$$$$                   *
+*                :$$$$$$$$$. +XXXXXXXXX;      ;: x$$$$$$$$$                    *
+*                ;x$$$$XX$$$$+ .;+X+      :;: :$$$$$xX$$$X                     *
+*               ;;;;;;;;;;X$$$$$$$+      :X$$$$$$&.                            *
+*               ;;;;;;;:;;;;;x$$$$$$$$$$$$$$$$x.                               *
+*               :;;;;;;;;;;;;.  :$$$$$$$$$$X                                   *
+*                .;;;;;;;;:;;    +$$$$$$$$$                                    *
+*                  .;;;;;;.       X$$$$$$$:                                    *
+*                                                                              *
+*   Unless required by applicable law or agreed to in writing, software        *
+*   distributed under the License is distributed on an "AS IS" BASIS,          *
+*   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   *
+*   See the License for the specific language governing permissions and        *
+*   limitations under the License.                                             *
+*                                                                              *
+*******************************************************************************/
+
 #include <deque>
 #include <mutex>
 #include <atomic>
@@ -17,9 +56,6 @@
 #include "csm_metrics/stats.hpp"
 #include "csm_metrics/profiling.hpp"
 
-#include "util.hpp"
-#include "pub_map.hpp"
-
 #include "sick_scan_xd/udp_sockets.h"
 #include "sick_scan_xd/msgpack_parser.h"
 #include "sick_scan_xd/compact_parser.h"
@@ -27,6 +63,7 @@
 #include "sick_scan_xd/sick_scan_common_tcp.h"
 #include "sick_scan_xd/sopas_services.h"
 
+#include "ros_utils.hpp"
 #include "point_fields.hpp"
 #ifndef MS_DRIVER_POINT_TYPE_FIELDS
 #define MS_DRIVER_POINT_TYPE_FIELDS     MS_POINT_FIELD_ENABLE_XYZPTR
@@ -46,9 +83,10 @@
     #define IF_PUBLISH_PROCESS_METRICS(...)
 #endif
 
+using namespace util::ros_aliases;
 
-class MultiscanNode :
-    public rclcpp::Node
+
+class MultiscanNode : public rclcpp::Node
 {
     using ImuMsg = sensor_msgs::msg::Imu;
     using PointCloudMsg = sensor_msgs::msg::PointCloud2;
@@ -91,8 +129,8 @@ private:
     }
     config;
 
-    rclcpp::Publisher<PointCloudMsg>::SharedPtr scan_pub;
-    rclcpp::Publisher<ImuMsg>::SharedPtr imu_pub;
+    SharedPub<PointCloudMsg> scan_pub;
+    SharedPub<ImuMsg> imu_pub;
 
     PointCloudMsg::_fields_type scan_fields;
 
@@ -102,8 +140,8 @@ private:
     std::atomic<bool> is_running = true;
 
 #if PUBLISH_PROCESS_METRICS
-    rclcpp::Publisher<ProcessStatsMsg>::SharedPtr proc_stats_pub;
-    rclcpp::TimerBase::SharedPtr stats_pub_timer;
+    SharedPub<ProcessStatsMsg> proc_stats_pub;
+    RclTimer stats_pub_timer;
     csm::metrics::ProcessStats process_stats;
 #endif
 

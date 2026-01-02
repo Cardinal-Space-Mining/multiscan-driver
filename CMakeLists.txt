@@ -32,7 +32,6 @@ find_package(csm_metrics REQUIRED)
 
 include_directories(${EIGEN3_INCLUDE_DIRS})
 
-include_directories(include)
 include_directories(SYSTEM)
 
 add_library(scansegment_xd STATIC
