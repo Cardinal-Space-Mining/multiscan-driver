@@ -66,15 +66,15 @@
 #include "ros_utils.hpp"
 #include "point_fields.hpp"
 #ifndef MS_DRIVER_POINT_TYPE_FIELDS
-#define MS_DRIVER_POINT_TYPE_FIELDS     MS_POINT_FIELD_ENABLE_XYZPTR
+    #define MS_DRIVER_POINT_TYPE_FIELDS MS_POINT_FIELD_ENABLE_XYZPTR
 #endif
 #include "point_type.hpp"
 
-#define STATS_PUB_FREQUNCY              10U
-#define STATS_PUB_DELTA_TIME_MS         (1000U / STATS_PUB_FREQUNCY)
+#define STATS_PUB_FREQUNCY      10U
+#define STATS_PUB_DELTA_TIME_MS (1000U / STATS_PUB_FREQUNCY)
 
 #ifndef PUBLISH_PROCESS_METRICS
-#define PUBLISH_PROCESS_METRICS 1
+    #define PUBLISH_PROCESS_METRICS 1
 #endif
 
 #if PUBLISH_PROCESS_METRICS
@@ -84,6 +84,11 @@
 #endif
 
 using namespace util::ros_aliases;
+using namespace sick_scan_xd;
+using namespace sick_scansegment_xd;
+
+#define ssxd     sick_scan_xd
+#define ssgmt_xd sick_scansegment_xd
 
 
 class MultiscanNode : public rclcpp::Node
@@ -100,15 +105,34 @@ public:
     void shutdown();
 
 protected:
+    bool initConnection();
+    int recvSegmentData(
+        double udp_recv_timeout_s,
+        chrono_system_time& recv_start_time);
+    bool parseSegment(
+        ScanSegmentParserOutput& seg,
+        const chrono_system_time& recv_start_time);
+    void publishImu(const ScanSegmentParserOutput& seg);
+    void addSegment(ScanSegmentParserOutput& seg);
+    void publishScan();
+
     void run_receiver();
-IF_PUBLISH_PROCESS_METRICS(
-    void publish_stats(); )
+#if PUBLISH_PROCESS_METRICS
+    void publish_stats();
+#endif
 
 private:
     static constexpr size_t
         MS100_SEGMENTS_PER_FRAME = 12U,
-        MS100_POINTS_PER_SEGMENT_ECHO = 900U,   // points per segment * segments per frame = 10800 points per frame (with 1 echo)
-        MS100_MAX_ECHOS_PER_POINT = 3U;         // echos get filterd when we apply different settings in the web dashboard
+        // points per segment * segments per frame = 10800 points per frame (with 1 echo)
+        MS100_POINTS_PER_SEGMENT_ECHO = 900U,
+        // echos get filterd when we apply different settings in the web dashboard
+        MS100_MAX_ECHOS_PER_POINT = 3U,
+        // constant from sick_scansegment_xd
+        RECV_BUFFER_N_BYTES = 64 * 1024;
+
+    using SegmentQueue = std::deque<ScanSegmentParserOutput>;
+    using SampleBuffer = std::array<SegmentQueue, MS100_SEGMENTS_PER_FRAME>;
 
     struct
     {
@@ -126,15 +150,20 @@ private:
         double sopas_read_timeout = 3.;
         double error_restart_timeout = 3.;
         int max_segment_buffering = 3;
-    }
-    config;
+    } config;
 
     SharedPub<PointCloudMsg> scan_pub;
     SharedPub<ImuMsg> imu_pub;
 
     PointCloudMsg::_fields_type scan_fields;
 
-    sick_scansegment_xd::UdpReceiverSocketImpl udp_recv_socket;
+    UdpReceiverSocketImpl udp_recv_socket;
+    std::unique_ptr<SickScanCommonTcp> sopas_tcp;
+    std::unique_ptr<SopasServices> sopas_service;
+
+    std::vector<uint8_t> udp_buffer;
+    SampleBuffer samples;
+    size_t sample_fill_mask = 0;
 
     std::thread recv_thread;
     std::atomic<bool> is_running = true;
@@ -144,462 +173,618 @@ private:
     RclTimer stats_pub_timer;
     csm::metrics::ProcessStats process_stats;
 #endif
-
 };
 
 
-void swapSegmentsNoIMU(
-    sick_scansegment_xd::ScanSegmentParserOutput& a,
-    sick_scansegment_xd::ScanSegmentParserOutput& b )
+void moveSegmentsNoIMU(ScanSegmentParserOutput& a, ScanSegmentParserOutput& b)
 {
-    std::swap(a.scandata, b.scandata);
-    std::swap(a.timestamp, b.timestamp);
-    std::swap(a.timestamp_sec, b.timestamp_sec);
-    std::swap(a.timestamp_nsec, b.timestamp_nsec);
-    std::swap(a.segmentIndex, b.segmentIndex);
-    std::swap(a.telegramCnt, b.telegramCnt);
+    a.scandata = std::move(b.scandata);
+    a.timestamp = std::move(b.timestamp);
+    a.timestamp_sec = b.timestamp_sec;
+    a.timestamp_nsec = b.timestamp_nsec;
+    a.segmentIndex = b.segmentIndex;
+    a.telegramCnt = b.telegramCnt;
 }
 
 
-MultiscanNode::MultiscanNode(bool autostart) :
-    Node("multiscan_driver")
+MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
 {
-    util::declare_param(this, "lidar_frame", this->config.lidar_frame_id, "lidar_link");
-    util::declare_param(this, "lidar_hostname", this->config.lidar_hostname, "");
-    util::declare_param(this, "driver_hostname", this->config.driver_hostname, "");
-    util::declare_param(this, "lidar_udp_port", this->config.lidar_udp_port, 2115);
+    util::declare_param(
+        this,
+        "lidar_frame",
+        this->config.lidar_frame_id,
+        "lidar_link");
+    util::declare_param(
+        this,
+        "lidar_hostname",
+        this->config.lidar_hostname,
+        "");
+    util::declare_param(
+        this,
+        "driver_hostname",
+        this->config.driver_hostname,
+        "");
+    util::declare_param(
+        this,
+        "lidar_udp_port",
+        this->config.lidar_udp_port,
+        2115);
     // util::declare_param(this, "imu_udp_port", this->config.imu_udp_port, 2115);
-    util::declare_param(this, "sopas_tcp_port", this->config.sopas_tcp_port, 2111);
+    util::declare_param(
+        this,
+        "sopas_tcp_port",
+        this->config.sopas_tcp_port,
+        2111);
     util::declare_param(this, "use_msgpack", this->config.use_msgpack, false);
-    util::declare_param(this, "use_cola_binary", this->config.use_cola_binary, true);
-    util::declare_param(this, "udp_reset_timeout", this->config.udp_dropout_reset_thresh, 2.);
-    util::declare_param(this, "udp_receive_timeout", this->config.udp_receive_timeout, 1.);
-    util::declare_param(this, "sopas_read_timeout", this->config.sopas_read_timeout, 3.);
-    util::declare_param(this, "error_restart_timeout", this->config.error_restart_timeout, 3.);
-    util::declare_param(this, "max_segment_buffers", this->config.max_segment_buffering, 3);
+    util::declare_param(
+        this,
+        "use_cola_binary",
+        this->config.use_cola_binary,
+        true);
+    util::declare_param(
+        this,
+        "udp_reset_timeout",
+        this->config.udp_dropout_reset_thresh,
+        2.);
+    util::declare_param(
+        this,
+        "udp_receive_timeout",
+        this->config.udp_receive_timeout,
+        1.);
+    util::declare_param(
+        this,
+        "sopas_read_timeout",
+        this->config.sopas_read_timeout,
+        3.);
+    util::declare_param(
+        this,
+        "error_restart_timeout",
+        this->config.error_restart_timeout,
+        3.);
+    util::declare_param(
+        this,
+        "max_segment_buffers",
+        this->config.max_segment_buffering,
+        3);
 
     this->scan_pub = this->create_publisher<PointCloudMsg>(
         "lidar_scan",
-        rclcpp::SensorDataQoS{} );
-    this->imu_pub = this->create_publisher<ImuMsg>(
-        "lidar_imu",
-        rclcpp::SensorDataQoS{} );
+        rclcpp::SensorDataQoS{});
+    this->imu_pub =
+        this->create_publisher<ImuMsg>("lidar_imu", rclcpp::SensorDataQoS{});
 
 #if PUBLISH_PROCESS_METRICS
     this->proc_stats_pub = this->create_publisher<ProcessStatsMsg>(
         "multiscan_driver/process_stats",
-        rclcpp::SensorDataQoS{} );
+        rclcpp::SensorDataQoS{});
     this->stats_pub_timer = this->create_wall_timer(
         std::chrono::milliseconds(STATS_PUB_DELTA_TIME_MS),
         [this]()
         {
             this->process_stats.update();
-            this->proc_stats_pub->publish(
-                this->process_stats.toMsg() );
-        } );
+            this->proc_stats_pub->publish(this->process_stats.toMsg());
+        });
 #endif
 
     this->scan_fields = MS_DRIVER_POINT_FIELD_LIST;
 
-    if(autostart)
+    if (autostart)
     {
         this->start();
     }
 }
 
-MultiscanNode::~MultiscanNode()
-{
-    this->shutdown();
-}
+MultiscanNode::~MultiscanNode() { this->shutdown(); }
+
 
 void MultiscanNode::start()
 {
     this->is_running = true;
-    if(!this->recv_thread.joinable())
+    if (!this->recv_thread.joinable())
     {
-        this->recv_thread = std::thread{ &MultiscanNode::run_receiver, this };
+        this->recv_thread = std::thread{&MultiscanNode::run_receiver, this};
     }
 }
-
-void MultiscanNode::run_receiver()
-{
-    while(this->is_running)
-    {
-        RCLCPP_INFO(
-            this->get_logger(),
-            "[MULTISCAN DRIVER]: Initializing connections using the following parameters:"
-            "\n\tLidar IP address: %s"
-            "\n\tDriver IP address: %s"
-            "\n\tLidar UDP port: %d"
-            "\n\tSOPAS TCP port: %d"
-            "\n\tData format: %s"
-            "\n\tCoLa configuration: %s",
-            this->config.lidar_hostname.c_str(),
-            this->config.driver_hostname.c_str(),
-            this->config.lidar_udp_port,
-            this->config.sopas_tcp_port,
-            this->config.use_msgpack ? "MsgPack" : "Compact",
-            this->config.use_cola_binary ? "Binary" : "ASCII");
-
-        PROFILING_NOTIFY(init_connection);
-
-        if(this->udp_recv_socket.Init("", this->config.lidar_udp_port))
-        {
-            RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: UDP socket created successfully");
-
-            sick_scan_xd::SickScanCommonTcp sopas_tcp{
-                this->config.lidar_hostname,
-                this->config.sopas_tcp_port,
-                this->config.use_cola_binary ? 'B' : 'A' };
-            sick_scan_xd::SopasServices sopas_service{
-                &sopas_tcp,
-                this->config.use_cola_binary };
-            sopas_tcp.init_device(3);
-            sopas_tcp.setReadTimeOutInMs(static_cast<size_t>(this->config.sopas_read_timeout * 1e3));
-
-            if(sopas_tcp.isConnected())
-            {
-                RCLCPP_INFO(
-                    this->get_logger(),
-                    "[MULTISCAN DRIVER]: TCP connected! Sending startup commands..." );
-
-                sopas_service.sendAuthorization();
-                sopas_service.sendMultiScanStartCmd(
-                    this->config.driver_hostname,
-                    this->config.lidar_udp_port,
-                    (2 - this->config.use_msgpack),     // 1 for msgpack, 2 for compact
-                    true,                               // imu data enable
-                    this->config.lidar_udp_port );
-
-                RCLCPP_INFO(
-                    this->get_logger(),
-                    "[MULTISCAN DRIVER]: Successfully sent all startup commands. Proceeding to UDP decode loop." );
-            }
-            else
-            {
-                RCLCPP_INFO(
-                    this->get_logger(),
-                    "[MULTISCAN DRIVER]: TCP not connected! Could not send SOPAS initialization command!" );
-                // TODO: restart
-            }
-
-            PROFILING_NOTIFY(init_connection);
-
-            constexpr size_t RECV_BUFFER_SIZE = 64 * 1024;  // from sick_scansegment_xd
-            std::vector<uint8_t>
-                udp_buffer(RECV_BUFFER_SIZE, 0),
-                udp_msg_start_seq({ 0x02, 0x02, 0x02, 0x02 });
-
-            double udp_recv_timeout = 5.;
-            chrono_system_time timestamp_last_udp_recv = chrono_system_clock::now();
-
-            using SegmentQueue = std::deque<sick_scansegment_xd::ScanSegmentParserOutput>;
-            using SampleBuffer = std::array<SegmentQueue, MS100_SEGMENTS_PER_FRAME>;
-            SampleBuffer samples{};
-            size_t filled_segments = 0;
-
-            try
-            {
-                while(this->is_running && sopas_tcp.isConnected())
-                {
-                    PROFILING_SYNC();
-                    PROFILING_FLUSH();
-                    PROFILING_NOTIFY(receive_bytes);
-
-                    // RCLCPP_DEBUG(this->get_logger(), "[MULTISCAN DRIVER]: Waiting to receive bytes...");
-                    size_t bytes_received = this->udp_recv_socket.Receive(
-                                                                    udp_buffer,
-                                                                    udp_recv_timeout,
-                                                                    udp_msg_start_seq );
-                    // RCLCPP_DEBUGthis->get_logger(), "[MULTISCAN DRIVER]: Received %ld bytes from %d", bytes_received, this->udp_recv_socket.port());
-                    if( bytes_received > udp_msg_start_seq.size() + 8 &&
-                        std::equal(
-                            udp_buffer.begin(),
-                            udp_buffer.begin() + udp_msg_start_seq.size(),
-                            udp_msg_start_seq.begin() ) )
-                    {
-                        uint32_t payload_length_bytes = 0;
-                        uint32_t bytes_to_receive = 0;
-                        uint32_t udp_payload_offset = 0;
-
-                        chrono_system_time recv_start_timestamp = chrono_system_clock::now();
-                        if(this->config.use_msgpack)
-                        {
-                            payload_length_bytes = sick_scansegment_xd::Convert4Byte(
-                                                                            udp_buffer.data() + udp_msg_start_seq.size());
-                            bytes_to_receive = (uint32_t)(payload_length_bytes + udp_msg_start_seq.size() + 2 * sizeof(uint32_t));
-                            udp_payload_offset = udp_msg_start_seq.size() + sizeof(uint32_t); // payload starts after (4 byte \x02\x02\x02\x02) + (4 byte payload length)
-                        }
-                        else
-                        {
-                            bool parse_success = false;
-                            uint32_t num_bytes_required = 0;
-                            while(
-                                this->is_running &&
-                                !(parse_success = sick_scansegment_xd::CompactDataParser::ParseSegment(udp_buffer.data(), bytes_received, 0, payload_length_bytes, num_bytes_required)) &&
-                                (udp_recv_timeout < 0 || sick_scansegment_xd::Seconds(recv_start_timestamp, chrono_system_clock::now()) < udp_recv_timeout) ) // read blocking (udp_recv_timeout < 0) or udp_recv_timeout in seconds
-                            {
-                                if(num_bytes_required > 1024 * 1024)
-                                {
-                                    parse_success = false;
-                                    // RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Received %ld bytes (compact), %lu bytes required - probably incorrect payload.", bytes_received, num_bytes_required + sizeof(uint32_t));
-                                    sick_scansegment_xd::CompactDataParser::ParseSegment(
-                                        udp_buffer.data(),
-                                        bytes_received,
-                                        0,
-                                        payload_length_bytes,
-                                        num_bytes_required,
-                                        0.0f,
-                                        1 ); // parse again with debug output after error
-                                    break;
-                                }
-                                // RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: %ld bytes received (compact), %lu bytes or more required.", bytes_received, num_bytes_required + sizeof(uint32_t));
-                                while(
-                                    this->is_running &&
-                                    (bytes_received < num_bytes_required + sizeof(uint32_t)) && // payload + 4 byte CRC required
-                                    (udp_recv_timeout < 0 || sick_scansegment_xd::Seconds(recv_start_timestamp, chrono_system_clock::now()) < udp_recv_timeout) ) // read blocking (udp_recv_timeout < 0) or udp_recv_timeout in seconds
-                                {
-                                    std::vector<uint8_t> chunk_buffer(RECV_BUFFER_SIZE, 0);
-                                    size_t chunk_bytes_received = this->udp_recv_socket.Receive(chunk_buffer);
-                                    // RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Received chunk of %ld bytes.", chunk_bytes_received);
-                                    udp_buffer.insert(udp_buffer.begin() + bytes_received, chunk_buffer.begin(), chunk_buffer.begin() + chunk_bytes_received);
-                                    bytes_received += chunk_bytes_received;
-                                }
-                            }
-                            if(!parse_success)
-                            {
-                                RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Compact payload parse failed.");
-                                PROFILING_NOTIFY(receive_bytes);
-                                continue;
-                            }
-                            bytes_to_receive = (uint32_t)(payload_length_bytes + sizeof(uint32_t)); // payload + (4 byte CRC)
-                            udp_payload_offset = 0; // compact format calculates CRC over complete message (incl. header)
-                            // RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Payload bytes: %ld, Bytes to receive: %lu, Bytes received: %ld", payload_length_bytes, bytes_to_receive, bytes_received);
-                        }
-
-                        // if(bytes_received != bytes_to_receive)
-                        // {
-                        //     RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: ERROR: Recieved %ld bytes but expected %lu bytes!", bytes_received, bytes_to_receive);
-                        // }
-
-                        size_t bytes_valid = std::min<size_t>(bytes_received, (size_t)bytes_to_receive);
-                        uint32_t u32PayloadCRC = sick_scansegment_xd::Convert4Byte(udp_buffer.data() + bytes_valid - sizeof(uint32_t)); // last 4 bytes are CRC
-                        std::vector<uint8_t> msgpack_payload{ udp_buffer.begin() + udp_payload_offset, udp_buffer.begin() + bytes_valid - sizeof(uint32_t) };
-                        uint32_t u32MsgPackCRC = sick_scansegment_xd::crc32(0, msgpack_payload.data(), msgpack_payload.size());
-
-                        if(u32PayloadCRC != u32MsgPackCRC)
-                        {
-                            RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: CRC payload check failed.");
-                            PROFILING_NOTIFY(receive_bytes);
-                            continue;
-                        }
-
-                        // RCLCPP_DEBUG(this->get_logger(), "[MULTISCAN DRIVER]: Processing data...");
-
-                        PROFILING_NOTIFY2(receive_bytes, parse_segment);
-
-                        // process
-                        {
-                            sick_scansegment_xd::ScanSegmentParserOutput segment;
-                            if(this->config.use_msgpack)
-                            {
-                                if(!sick_scansegment_xd::MsgPackParser::Parse(udp_buffer, recv_start_timestamp, segment, true, false))
-                                {
-                                    RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Msgpack parse failed.");
-                                    PROFILING_NOTIFY(parse_segment);
-                                    continue;
-                                }
-                            }
-                            else
-                            {
-                                if(!sick_scansegment_xd::CompactDataParser::Parse(udp_buffer, recv_start_timestamp, segment, 0, true, false))
-                                {
-                                    RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Compact parse failed.");
-                                    PROFILING_NOTIFY(parse_segment);
-                                    continue;
-                                }
-                            }
-
-                            PROFILING_NOTIFY(parse_segment);
-
-                            // export imu if available
-                            if(segment.imudata.valid)
-                            {
-                                PROFILING_NOTIFY(export_imu);
-
-                                sensor_msgs::msg::Imu msg;
-
-                                msg.header.stamp.sec = segment.timestamp_sec;
-                                msg.header.stamp.nanosec = segment.timestamp_nsec;
-                                msg.header.frame_id = this->config.lidar_frame_id;
-
-                                msg.angular_velocity.x = segment.imudata.angular_velocity_x;
-                                msg.angular_velocity.y = segment.imudata.angular_velocity_y;
-                                msg.angular_velocity.z = segment.imudata.angular_velocity_z;
-
-                                msg.linear_acceleration.x = segment.imudata.acceleration_x;
-                                msg.linear_acceleration.y = segment.imudata.acceleration_y;
-                                msg.linear_acceleration.z = segment.imudata.acceleration_z;
-
-                                msg.orientation.w = segment.imudata.orientation_w;
-                                msg.orientation.x = segment.imudata.orientation_x;
-                                msg.orientation.y = segment.imudata.orientation_y;
-                                msg.orientation.z = segment.imudata.orientation_z;
-
-                                this->imu_pub->publish(msg);
-
-                                PROFILING_NOTIFY(export_imu);
-                            }
-
-                            if(segment.scandata.size() > 0)
-                            {
-                                PROFILING_NOTIFY(queue_sample);
-
-                                const size_t idx = segment.segmentIndex;
-                                samples[idx].emplace_front();
-                                if(samples[idx].size() > static_cast<size_t>(this->config.max_segment_buffering))
-                                {
-                                    samples[idx].resize(this->config.max_segment_buffering);
-                                }
-                                swapSegmentsNoIMU(samples[idx].front(), segment);
-                                filled_segments |= 1 << idx;
-
-                                PROFILING_NOTIFY(queue_sample);
-                            }
-
-                            if(filled_segments >= (1 << MS100_SEGMENTS_PER_FRAME) - 1)
-                            {
-                                PROFILING_NOTIFY(export_cloud);
-
-                                // assemble and publish pc
-                                sensor_msgs::msg::PointCloud2 scan;
-                                constexpr size_t MS100_NOMINAL_POINTS_PER_SCAN = MS100_POINTS_PER_SEGMENT_ECHO * MS100_SEGMENTS_PER_FRAME;  // single echo
-                                constexpr size_t POINT_CONTINUOUS_BYTE_LEN = COMPUTE_NUM_CONTIGUOUS_POINT_FIELDS(MS_DRIVER_POINT_TYPE_FIELDS) * 4;
-                                constexpr size_t POINT_BYTE_LEN = COMPUTE_NUM_POINT_FIELDS(MS_DRIVER_POINT_TYPE_FIELDS) * 4;
-                                scan.data.reserve(MS100_NOMINAL_POINTS_PER_SCAN * POINT_BYTE_LEN);  // 52 bytes per point (max)
-                                scan.data.resize(0);
-
-                                uint64_t earliest_ts = std::numeric_limits<uint64_t>::max();
-                                for(auto& segment_queue : samples)
-                                {
-                                    const auto& _seg = segment_queue.front();
-                                    uint64_t ts = static_cast<uint64_t>(_seg.timestamp_sec) * 1000000000UL + static_cast<uint64_t>(_seg.timestamp_nsec);
-                                    if(ts < earliest_ts) earliest_ts = ts;
-
-                                    for(const auto& _group : _seg.scandata)
-                                    {
-                                        for(const auto& _line : _group.scanlines)
-                                        {
-                                            for(const auto& _point : _line.points)
-                                            {
-                                                scan.data.resize(scan.data.size() + POINT_BYTE_LEN);
-                                                uint8_t* _point_data = scan.data.end().base() - POINT_BYTE_LEN;
-
-                                                memcpy(_point_data, &_point, POINT_CONTINUOUS_BYTE_LEN);
-
-                                            #if POINT_FIELDS_HAVE_TIMESTAMP(MS_DRIVER_POINT_TYPE_FIELDS)
-                                                memcpy(_point_data + POINT_CONTINUOUS_BYTE_LEN, &_point.lidar_timestamp_microsec, sizeof(_point.lidar_timestamp_microsec));
-                                                // #define POINT_TSL_U32_IDX (POINT_CONTINUOUS_BYTE_LEN / sizeof(uint32_t))
-                                                // #define POINT_TSH_U32_IDX (POINT_TSL_U32_IDX + 1)
-                                                // reinterpret_cast<uint32_t*>(_point_data)[POINT_TSL_U32_IDX] = *reinterpret_cast<const uint32_t*>(&_point.lidar_timestamp_microsec);
-                                                // reinterpret_cast<uint32_t*>(_point_data)[POINT_TSH_U32_IDX] = *(reinterpret_cast<const uint32_t*>(&_point.lidar_timestamp_microsec) + 1);
-                                                // #undef POINT_TSL_U32_IDX
-                                                // #undef POINT_TSH_U32_IDX
-                                                // #define POINT_TS_U64_IDX (POINT_CONTINUOUS_BYTE_LEN / sizeof(uint64_t))
-                                                // reinterpret_cast<uint64_t*>(_point_data)[POINT_TS_U64_IDX] = _point.lidar_timestamp_microsec;   // since lidar was turned on
-                                                // #undef POINT_TS_U64_IDX
-                                            #endif
-                                            #if POINT_FIELDS_HAVE_REFLECTOR(MS_DRIVER_POINT_TYPE_FIELDS)
-                                                #define POINT_RB_F32_IDX ( (POINT_CONTINUOUS_BYTE_LEN / sizeof(float)) + (POINT_FIELDS_HAVE_TIMESTAMP(MS_DRIVER_POINT_TYPE_FIELDS) * 2) )
-                                                reinterpret_cast<float*>(_point_data)[POINT_RB_F32_IDX] = _point.reflectorbit;
-                                            #endif
-                                            }
-                                        }
-                                    }
-                                    segment_queue.clear();
-                                }
-
-                                scan.fields = this->scan_fields;
-                                scan.is_bigendian = false;
-                                scan.point_step = POINT_BYTE_LEN;
-                                scan.row_step = scan.data.size();
-                                scan.height = 1;
-                                scan.width = scan.data.size() / POINT_BYTE_LEN;
-                                scan.is_dense = true;
-                                scan.header.frame_id = this->config.lidar_frame_id;
-                                scan.header.stamp.sec = earliest_ts / 1000000000UL;
-                                scan.header.stamp.nanosec = earliest_ts % 1000000000UL;
-
-                                this->scan_pub->publish(scan);
-                                filled_segments = 0;
-
-                                PROFILING_NOTIFY(export_cloud);
-                            }
-                        }
-
-                        if(bytes_received > 0)
-                        {
-                            timestamp_last_udp_recv = chrono_system_clock::now();
-                        }
-                        if(sick_scansegment_xd::Seconds(timestamp_last_udp_recv, chrono_system_clock::now()) > this->config.udp_dropout_reset_thresh)
-                        {
-                            udp_recv_timeout = -1;
-                        }
-                        else
-                        {
-                            udp_recv_timeout = this->config.udp_receive_timeout; // receive non-blocking with timeout
-                        }
-                    }
-                    else
-                    {
-                        PROFILING_NOTIFY(receive_bytes);
-                    }
-                }
-
-                if(!sopas_tcp.isConnected())
-                {
-                    RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: SOPAS TCP connection lost - restarting...");
-                }
-            }
-            catch(const std::exception& e)
-            {
-                RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: UDP decode loop encountered an exception - what():\n\t%s", e.what());
-            }
-            // catch(...)
-            // {
-            //     RCLCPP_INFO(this->get_logger(), "[MULTISCAN_DRIVER]; UDP decode loop threw unknown exception.");
-            // }
-
-            if(sopas_tcp.isConnected())
-            {
-                sopas_service.sendAuthorization();
-                sopas_service.sendMultiScanStopCmd(true);
-            }
-        }
-        else
-        {
-            PROFILING_NOTIFY(init_connection);
-            PROFILING_FLUSH();
-        }
-
-        if(this->is_running)
-        {
-            RCLCPP_INFO(this->get_logger(), "[MULTISCAN DRIVER]: Encountered error - restarting after timeout...");
-            std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<size_t>(this->config.error_restart_timeout * 1e3)));
-        }
-    }
-}
-
 
 void MultiscanNode::shutdown()
 {
     this->is_running = false;
-    if(this->recv_thread.joinable())
+    if (this->recv_thread.joinable())
     {
         this->udp_recv_socket.ForceStop();
         this->recv_thread.join();
     }
 }
+
+
+bool MultiscanNode::initConnection()
+{
+    this->sopas_tcp = std::make_unique<SickScanCommonTcp>(
+        this->config.lidar_hostname,
+        this->config.sopas_tcp_port,
+        this->config.use_cola_binary ? 'B' : 'A');
+    this->sopas_service = std::make_unique<SopasServices>(
+        this->sopas_tcp.get(),
+        this->config.use_cola_binary);
+    this->sopas_tcp->init_device(3);
+    this->sopas_tcp->setReadTimeOutInMs(
+        static_cast<size_t>(this->config.sopas_read_timeout * 1e3));
+
+    if (!this->sopas_tcp->isConnected())
+    {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "[MULTISCAN DRIVER]: Failed to setup TCP SOPAS connection to "
+            "initialize device using parameters:\n"
+            "\tDevice Hostname: %s\n"
+            "\tSOPAS TCP Port: %d\n"
+            "\tCoLa Mode: %s\n",
+            this->config.lidar_hostname.c_str(),
+            this->config.sopas_tcp_port,
+            this->config.use_cola_binary ? "Binary" : "Ascii");
+        return false;
+    }
+
+    RCLCPP_DEBUG(
+        this->get_logger(),
+        "[MULTISCAN DRIVER]: TCP connected! Sending startup commands...");
+
+    if (!this->sopas_service->sendAuthorization())
+    {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "[MULTISCAN DRIVER]: SOPAS authorization command failed.");
+        return false;
+    }
+
+    if (!this->sopas_service->sendMultiScanStartCmd(
+            this->config.driver_hostname,
+            this->config.lidar_udp_port,
+            (2 -
+             static_cast<int>(
+                 this->config.use_msgpack)),  // 1 for msgpack, 2 for compact
+            true,                             // enable imu data
+            this->config.lidar_udp_port))
+    {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "[MULTISCAN DRIVER]: SOPAS startup sequence failed.");
+        return false;
+    }
+
+    RCLCPP_DEBUG(
+        this->get_logger(),
+        "[MULTISCAN DRIVER]: Successfully sent all startup commands.");
+
+    if (!this->udp_recv_socket.Init("", this->config.lidar_udp_port))
+    {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "[MULTISCAN DRIVER]: Failed to initialize UDP socket using port %d.",
+            this->config.lidar_udp_port);
+        return false;
+    }
+
+    RCLCPP_DEBUG(
+        this->get_logger(),
+        "[MULTISCAN DRIVER]: Successfully initialized UDP connection!");
+
+    return true;
+}
+
+int MultiscanNode::recvSegmentData(
+    double udp_recv_timeout_s,
+    chrono_system_time& recv_start_time)
+{
+    static const std::vector<uint8_t> UDP_MSG_START_SEQ(
+        {0x02, 0x02, 0x02, 0x02});
+
+    size_t bytes_received = this->udp_recv_socket.Receive(
+        this->udp_buffer,
+        udp_recv_timeout_s,
+        UDP_MSG_START_SEQ);
+
+    const bool recv_ok =
+        (bytes_received > UDP_MSG_START_SEQ.size() + 8) &&
+        std::equal(
+            this->udp_buffer.begin(),
+            this->udp_buffer.begin() + UDP_MSG_START_SEQ.size(),
+            UDP_MSG_START_SEQ.begin());
+    if (!recv_ok)
+    {
+        return -1;
+    }
+
+    uint32_t payload_len_bytes = 0;
+    uint32_t bytes_to_receive = 0;
+    uint32_t udp_payload_offset = 0;
+
+    recv_start_time = chrono_system_clock::now();
+    if (this->config.use_msgpack)
+    {
+        payload_len_bytes = ssgmt_xd::Convert4Byte(
+            udp_buffer.data() + UDP_MSG_START_SEQ.size());
+        bytes_to_receive = static_cast<uint32_t>(
+            payload_len_bytes + UDP_MSG_START_SEQ.size() +
+            2 * sizeof(uint32_t));
+        // payload starts after (4 byte \x02\x02\x02\x02) + (4 byte payload length)
+        udp_payload_offset = UDP_MSG_START_SEQ.size() + sizeof(uint32_t);
+    }
+    else
+    {
+        bool parse_success = false;
+        uint32_t n_bytes_req = 0;
+        while (this->is_running &&
+               !(parse_success = CompactDataParser::ParseSegment(
+                     this->udp_buffer.data(),
+                     bytes_received,
+                     0,
+                     payload_len_bytes,
+                     n_bytes_req)) &&
+               (udp_recv_timeout_s < 0 ||
+                ssgmt_xd::Seconds(recv_start_time, chrono_system_clock::now()) <
+                    udp_recv_timeout_s))
+        {
+            if (n_bytes_req > (1 << 20))
+            {
+                parse_success = false;
+                CompactDataParser::ParseSegment(
+                    this->udp_buffer.data(),
+                    bytes_received,
+                    0,
+                    payload_len_bytes,
+                    n_bytes_req,
+                    0.f,
+                    1);
+                break;
+            }
+
+            while (this->is_running &&
+                   (bytes_received < n_bytes_req + sizeof(uint32_t)) &&
+                   (udp_recv_timeout_s < 0 ||
+                    ssgmt_xd::Seconds(
+                        recv_start_time,
+                        chrono_system_clock::now()) < udp_recv_timeout_s))
+            {
+                std::vector<uint8_t> chunk_buffer(RECV_BUFFER_N_BYTES, 0);
+                size_t chunk_bytes_received =
+                    this->udp_recv_socket.Receive(chunk_buffer);
+                this->udp_buffer.insert(
+                    this->udp_buffer.begin() + bytes_received,
+                    chunk_buffer.begin(),
+                    chunk_buffer.begin() + chunk_bytes_received);
+                bytes_received += chunk_bytes_received;
+            }
+        }
+
+        if (!parse_success)
+        {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: Failed to parse compact payload from bytes received over UDP.");
+            return -2;
+        }
+
+        // payload + (4 byte CRC)
+        bytes_to_receive =
+            static_cast<uint32_t>(payload_len_bytes + sizeof(uint32_t));
+        // compact format calculates CRC over complete message (incl. header)
+        udp_payload_offset = 0;
+    }
+
+    size_t bytes_valid =
+        std::min<size_t>(bytes_received, static_cast<size_t>(bytes_to_receive));
+    const uint32_t u32_payload_crc = ssgmt_xd::Convert4Byte(
+        this->udp_buffer.data() + bytes_valid - sizeof(uint32_t));
+    const std::vector<uint8_t> msgpack_payload{
+        this->udp_buffer.begin() + udp_payload_offset,
+        this->udp_buffer.begin() + bytes_valid - sizeof(uint32_t)};
+    const uint32_t u32_msgpack_crc =
+        ssgmt_xd::crc32(0, msgpack_payload.data(), msgpack_payload.size());
+
+    if (u32_payload_crc != u32_msgpack_crc)
+    {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "[MULTISCAN DRIVEr]: CRC payload check failed!");
+        return -3;
+    }
+
+    return static_cast<int>(bytes_received);
+}
+
+bool MultiscanNode::parseSegment(
+    ScanSegmentParserOutput& seg,
+    const chrono_system_time& recv_start_time)
+{
+    if (this->config.use_msgpack)
+    {
+        if (!MsgPackParser::Parse(
+                this->udp_buffer,
+                recv_start_time,
+                seg,
+                true,
+                false))
+        {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: Msgpack parse failed.");
+            return false;
+        }
+    }
+    else
+    {
+        if (!CompactDataParser::Parse(
+                this->udp_buffer,
+                recv_start_time,
+                seg,
+                0,
+                true,
+                false))
+        {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: Compact parse failed.");
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void MultiscanNode::publishImu(const ScanSegmentParserOutput& seg)
+{
+    sensor_msgs::msg::Imu msg;
+
+    msg.header.stamp.sec = seg.timestamp_sec;
+    msg.header.stamp.nanosec = seg.timestamp_nsec;
+    msg.header.frame_id = this->config.lidar_frame_id;
+
+    msg.angular_velocity.x = seg.imudata.angular_velocity_x;
+    msg.angular_velocity.y = seg.imudata.angular_velocity_y;
+    msg.angular_velocity.z = seg.imudata.angular_velocity_z;
+
+    msg.linear_acceleration.x = seg.imudata.acceleration_x;
+    msg.linear_acceleration.y = seg.imudata.acceleration_y;
+    msg.linear_acceleration.z = seg.imudata.acceleration_z;
+
+    msg.orientation.w = seg.imudata.orientation_w;
+    msg.orientation.x = seg.imudata.orientation_x;
+    msg.orientation.y = seg.imudata.orientation_y;
+    msg.orientation.z = seg.imudata.orientation_z;
+
+    this->imu_pub->publish(msg);
+}
+
+void MultiscanNode::addSegment(ScanSegmentParserOutput& seg)
+{
+    const size_t idx = static_cast<size_t>(seg.segmentIndex);
+    samples[idx].emplace_front();
+    if (samples[idx].size() >
+        static_cast<size_t>(this->config.max_segment_buffering))
+    {
+        samples[idx].resize(this->config.max_segment_buffering);
+    }
+    ::moveSegmentsNoIMU(samples[idx].front(), seg);
+    this->sample_fill_mask |= (1 << idx);
+}
+
+void MultiscanNode::publishScan()
+{
+    using ScanGroup = ScanSegmentParserOutput::Scangroup;
+    using ScanLine = ScanSegmentParserOutput::Scanline;
+    using LidarPoint = ScanSegmentParserOutput::LidarPoint;
+
+    constexpr size_t MS100_NOMINAL_POINTS_PER_SCAN =
+        MS100_POINTS_PER_SEGMENT_ECHO *
+        MS100_SEGMENTS_PER_FRAME;  // assume single echo
+    constexpr size_t POINT_CONTINUOUS_BYTE_LEN =
+        COMPUTE_NUM_CONTIGUOUS_POINT_FIELDS(MS_DRIVER_POINT_TYPE_FIELDS) * 4;
+    constexpr size_t POINT_BYTE_LEN =
+        COMPUTE_NUM_POINT_FIELDS(MS_DRIVER_POINT_TYPE_FIELDS) * 4;
+
+    sensor_msgs::msg::PointCloud2 scan;
+    scan.data.reserve(MS100_NOMINAL_POINTS_PER_SCAN * POINT_BYTE_LEN);
+    scan.data.resize(0);
+
+    uint64_t earliest_ts = std::numeric_limits<uint64_t>::max();
+    for (SegmentQueue& segment_queue : this->samples)
+    {
+        const ScanSegmentParserOutput& seg = segment_queue.front();
+        const uint64_t ts =
+            static_cast<uint64_t>(seg.timestamp_sec) * 1000000000UL +
+            static_cast<uint64_t>(seg.timestamp_nsec);
+        if (ts < earliest_ts)
+        {
+            earliest_ts = ts;
+        }
+
+        for (const ScanGroup& group : seg.scandata)
+        {
+            for (const ScanLine& line : group.scanlines)
+            {
+                for (const LidarPoint& point : line.points)
+                {
+                    scan.data.resize(scan.data.size() + POINT_BYTE_LEN);
+                    uint8_t* point_data =
+                        scan.data.end().base() - POINT_BYTE_LEN;
+
+                    memcpy(point_data, &point, POINT_CONTINUOUS_BYTE_LEN);
+
+#if POINT_FIELDS_HAVE_TIMESTAMP(MS_DRIVER_POINT_TYPE_FIELDS)
+                    memcpy(
+                        point_data + POINT_CONTINUOUS_BYTE_LEN,
+                        &point.lidar_timestamp_microsec,
+                        sizeof(point.lidar_timestamp_microsec));
+#endif
+#if POINT_FIELDS_HAVE_REFLECTOR(MS_DRIVER_POINT_TYPE_FIELDS)
+    #define POINT_RB_F32_IDX                                             \
+        ((POINT_CONTINUOUS_BYTE_LEN / sizeof(float)) +                   \
+         (POINT_FIELDS_HAVE_TIMESTAMP(MS_DRIVER_POINT_TYPE_FIELDS) * 2))
+                    reinterpret_cast<float*>(point_data)[POINT_RB_F32_IDX] =
+                        static_cast<float>(point.reflectorbit);
+#endif
+                }
+            }
+        }
+        segment_queue.clear();
+    }
+    this->sample_fill_mask = 0;
+
+    scan.fields = this->scan_fields;
+    scan.is_bigendian = false;
+    scan.point_step = POINT_BYTE_LEN;
+    scan.row_step = scan.data.size();
+    scan.height = 1;
+    scan.width = (scan.data.size() / POINT_BYTE_LEN);
+    scan.is_dense = true;
+    scan.header.frame_id = this->config.lidar_frame_id;
+    scan.header.stamp.sec = (earliest_ts / 1000000000UL);
+    scan.header.stamp.nanosec = (earliest_ts % 1000000000UL);
+
+    this->scan_pub->publish(scan);
+}
+
+void MultiscanNode::run_receiver()
+{
+    RCLCPP_INFO(
+        this->get_logger(),
+        "[MULTISCAN DRIVER]: Initializing connections using the following parameters:"
+        "\n\tLidar IP address: %s"
+        "\n\tDriver IP address: %s"
+        "\n\tLidar UDP port: %d"
+        "\n\tSOPAS TCP port: %d"
+        "\n\tData format: %s"
+        "\n\tCoLa configuration: %s",
+        this->config.lidar_hostname.c_str(),
+        this->config.driver_hostname.c_str(),
+        this->config.lidar_udp_port,
+        this->config.sopas_tcp_port,
+        this->config.use_msgpack ? "MsgPack" : "Compact",
+        this->config.use_cola_binary ? "Binary" : "ASCII");
+
+    while (this->is_running)
+    {
+        PROFILING_NOTIFY(init_connection);
+        if (!this->initConnection())
+        {
+            goto END_L;
+        }
+        PROFILING_NOTIFY(init_connection);
+
+        try
+        {
+            this->udp_buffer.clear();
+            this->udp_buffer.resize(RECV_BUFFER_N_BYTES, 0);
+
+            int n_recv_bytes = 0;
+            double udp_recv_timeout = 5.;
+            chrono_system_time recv_start_time;
+            chrono_system_time last_udp_recv_time = chrono_system_clock::now();
+
+            while (this->is_running && sopas_tcp->isConnected())
+            {
+                PROFILING_SYNC();
+                PROFILING_FLUSH();
+
+                PROFILING_NOTIFY(receive_bytes);
+                if ((n_recv_bytes = this->recvSegmentData(
+                         udp_recv_timeout,
+                         recv_start_time)) < 0)
+                {
+                    PROFILING_NOTIFY(receive_bytes);
+                    continue;
+                }
+
+                PROFILING_NOTIFY2(receive_bytes, parse_segment);
+
+                ScanSegmentParserOutput segment;
+                if (!this->parseSegment(segment, recv_start_time))
+                {
+                    PROFILING_NOTIFY(parse_segment);
+                    continue;
+                }
+                PROFILING_NOTIFY(parse_segment);
+
+                if (segment.imudata.valid)
+                {
+                    PROFILING_NOTIFY(export_imu);
+                    this->publishImu(segment);
+                    PROFILING_NOTIFY(export_imu);
+                }
+                if (!segment.scandata.empty())
+                {
+                    PROFILING_NOTIFY(queue_sample);
+                    this->addSegment(segment);
+                    PROFILING_NOTIFY(queue_sample);
+                }
+
+                if (this->sample_fill_mask >=
+                    (1 << MS100_SEGMENTS_PER_FRAME) - 1)
+                {
+                    PROFILING_NOTIFY(export_cloud);
+                    this->publishScan();
+                    PROFILING_NOTIFY(export_cloud);
+                }
+
+                if (n_recv_bytes > 0)
+                {
+                    last_udp_recv_time = chrono_system_clock::now();
+                }
+                if (ssgmt_xd::Seconds(
+                        last_udp_recv_time,
+                        chrono_system_clock::now()) >
+                    this->config.udp_dropout_reset_thresh)
+                {
+                    udp_recv_timeout = -1;
+                }
+                else
+                {
+                    // receive non-blocking with timeout
+                    udp_recv_timeout = this->config.udp_receive_timeout;
+                }
+            }
+        }
+        catch (const std::exception& e)
+        {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: UDP decode loop encountered an exception - what():\n\t%s",
+                e.what());
+        }
+
+    END_L:
+
+        if (this->sopas_tcp->isConnected())
+        {
+            this->sopas_service->sendAuthorization();
+            this->sopas_service->sendMultiScanStopCmd(true);
+        }
+
+        if (this->is_running)
+        {
+            if (!this->sopas_tcp->isConnected())
+            {
+                RCLCPP_ERROR(
+                    this->get_logger(),
+                    "[MULTISCAN DRIVER]: Lost connection to SOPAS service. "
+                    "Restarting connections after timeout...");
+            }
+            else
+            {
+                RCLCPP_ERROR(
+                    this->get_logger(),
+                    "[MULTISCAN DRIVER]: Encountered decode error. "
+                    "Restarting connections after timeout...");
+            }
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(
+                    static_cast<size_t>(
+                        this->config.error_restart_timeout * 1e3)));
+        }
+    }
+}
+
 
 
 int main(int argc, char** argv)
