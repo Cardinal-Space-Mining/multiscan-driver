@@ -37,6 +37,7 @@
 *                                                                              *
 *******************************************************************************/
 
+#include <array>
 #include <deque>
 #include <mutex>
 #include <atomic>
@@ -44,6 +45,7 @@
 #include <limits>
 #include <thread>
 #include <vector>
+#include <numbers>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -70,6 +72,7 @@
 #endif
 #include "point_type.hpp"
 
+
 #define STATS_PUB_FREQUNCY      10U
 #define STATS_PUB_DELTA_TIME_MS (1000U / STATS_PUB_FREQUNCY)
 
@@ -82,6 +85,7 @@
 #else
     #define IF_PUBLISH_PROCESS_METRICS(...)
 #endif
+
 
 using namespace util::ros_aliases;
 using namespace sick_scan_xd;
@@ -116,9 +120,9 @@ protected:
     void addSegment(ScanSegmentParserOutput& seg);
     void publishScan();
 
-    void run_receiver();
+    void runReceiver();
 #if PUBLISH_PROCESS_METRICS
-    void publish_stats();
+    void publishStats();
 #endif
 
 private:
@@ -175,6 +179,8 @@ private:
 #endif
 };
 
+
+// --- Implementation ----------------------------------------------------------
 
 void moveSegmentsNoIMU(ScanSegmentParserOutput& a, ScanSegmentParserOutput& b)
 {
@@ -282,7 +288,7 @@ void MultiscanNode::start()
     this->is_running = true;
     if (!this->recv_thread.joinable())
     {
-        this->recv_thread = std::thread{&MultiscanNode::run_receiver, this};
+        this->recv_thread = std::thread{&MultiscanNode::runReceiver, this};
     }
 }
 
@@ -587,6 +593,9 @@ void MultiscanNode::publishScan()
     scan.data.reserve(MS100_NOMINAL_POINTS_PER_SCAN * POINT_BYTE_LEN);
     scan.data.resize(0);
 
+    std::vector<LidarPoint> ordered_points;
+    ordered_points.reserve(MS100_NOMINAL_POINTS_PER_SCAN);
+
     uint64_t earliest_ts = std::numeric_limits<uint64_t>::max();
     for (SegmentQueue& segment_queue : this->samples)
     {
@@ -603,10 +612,15 @@ void MultiscanNode::publishScan()
         {
             for (const ScanLine& line : group.scanlines)
             {
+                ordered_points.insert(
+                    ordered_points.end(),
+                    line.points.begin(),
+                    line.points.end());
+
                 for (const LidarPoint& point : line.points)
                 {
                     scan.data.resize(scan.data.size() + POINT_BYTE_LEN);
-                    uint8_t* point_data =
+                    uint8_t* const point_data =
                         scan.data.end().base() - POINT_BYTE_LEN;
 
                     memcpy(point_data, &point, POINT_CONTINUOUS_BYTE_LEN);
@@ -643,9 +657,74 @@ void MultiscanNode::publishScan()
     scan.header.stamp.nanosec = (earliest_ts % 1000000000UL);
 
     this->scan_pub->publish(scan);
+
+    constexpr float ONE_DEGREE_IN_RAD = 0.0174533f;
+    for(LidarPoint& point : ordered_points)
+    {
+        if(point.azimuth < 0.f)
+        {
+            point.azimuth += std::numbers::pi_v<float> * 2.f;
+        }
+    }
+    std::sort(
+        ordered_points.begin(),
+        ordered_points.end(),
+        [](const LidarPoint& a, const LidarPoint& b)
+        {
+            return a.elevation < b.elevation ||
+                   (std::abs(a.elevation - b.elevation) < ONE_DEGREE_IN_RAD &&
+                    a.azimuth < b.azimuth);
+        });
+
+    std::vector<float> layer_stddevs;
+    std::vector<float> layer_start_angles;
+    for (size_t i = 0;;)
+    {
+        const size_t layer_start_i = i;
+        const float layer_elevation = ordered_points[i].elevation;
+        double sum_elevation = 0.f;
+        for (; i < ordered_points.size() &&
+               std::abs(ordered_points[i].elevation - layer_elevation) <
+                   ONE_DEGREE_IN_RAD;
+             i++)
+        {
+            sum_elevation += static_cast<double>(ordered_points[i].elevation);
+        }
+        const size_t layer_end_i = i;
+        const size_t n_layer_pts = (layer_end_i - layer_start_i);
+        const float avg_elevation =
+            static_cast<float>(sum_elevation / n_layer_pts);
+
+        double sum_sq_diff = 0.f;
+        for (size_t j = layer_start_i; j < layer_end_i; j++)
+        {
+            const double diff = static_cast<double>(
+                ordered_points[j].elevation - avg_elevation);
+            sum_sq_diff + diff* diff;
+        }
+        layer_stddevs.push_back(
+            static_cast<float>(std::sqrt(sum_sq_diff / n_layer_pts)));
+        layer_start_angles.push_back(ordered_points[layer_start_i].azimuth);
+    }
+
+    double sum_azimuth = 0.f;
+    for (const float azimuth : layer_start_angles)
+    {
+        sum_azimuth += static_cast<double>(azimuth);
+    }
+    const float avg_azimuth =
+        static_cast<float>(sum_azimuth / layer_start_angles.size());
+    double sum_sq_diff = 0.f;
+    for (const float azimuth : layer_start_angles)
+    {
+        const double diff = static_cast<double>(azimuth - avg_azimuth);
+        sum_sq_diff += diff * diff;
+    }
+    const float azimuth_stddev =
+        static_cast<float>(std::sqrt(sum_sq_diff / layer_start_angles.size()));
 }
 
-void MultiscanNode::run_receiver()
+void MultiscanNode::runReceiver()
 {
     RCLCPP_INFO(
         this->get_logger(),
