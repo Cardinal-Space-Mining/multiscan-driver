@@ -169,6 +169,9 @@ private:
     SampleBuffer samples;
     size_t sample_fill_mask = 0;
 
+    std::vector<ScanSegmentParserOutput::LidarPoint> prev_points;
+    // std::vector<float> prev_layer_start_angles;
+
     std::thread recv_thread;
     std::atomic<bool> is_running = true;
 
@@ -659,9 +662,9 @@ void MultiscanNode::publishScan()
     this->scan_pub->publish(scan);
 
     constexpr float ONE_DEGREE_IN_RAD = 0.0174533f;
-    for(LidarPoint& point : ordered_points)
+    for (LidarPoint& point : ordered_points)
     {
-        if(point.azimuth < 0.f)
+        if (point.azimuth < 0.f)
         {
             point.azimuth += std::numbers::pi_v<float> * 2.f;
         }
@@ -676,52 +679,136 @@ void MultiscanNode::publishScan()
                     a.azimuth < b.azimuth);
         });
 
-    std::vector<float> layer_stddevs;
-    std::vector<float> layer_start_angles;
-    for (size_t i = 0;;)
-    {
-        const size_t layer_start_i = i;
-        const float layer_elevation = ordered_points[i].elevation;
-        double sum_elevation = 0.f;
-        for (; i < ordered_points.size() &&
-               std::abs(ordered_points[i].elevation - layer_elevation) <
-                   ONE_DEGREE_IN_RAD;
-             i++)
-        {
-            sum_elevation += static_cast<double>(ordered_points[i].elevation);
-        }
-        const size_t layer_end_i = i;
-        const size_t n_layer_pts = (layer_end_i - layer_start_i);
-        const float avg_elevation =
-            static_cast<float>(sum_elevation / n_layer_pts);
+    // std::vector<float> layer_stddevs;
+    // std::vector<float> layer_start_angles;
+    // for (size_t i = 0; i < ordered_points.size();)
+    // {
+    //     const size_t layer_start_i = i;
+    //     const float layer_elevation = ordered_points[i].elevation;
+    //     double sum_elevation = 0.;
+    //     for (; i < ordered_points.size() &&
+    //            std::abs(ordered_points[i].elevation - layer_elevation) <
+    //                ONE_DEGREE_IN_RAD;
+    //          i++)
+    //     {
+    //         sum_elevation += static_cast<double>(ordered_points[i].elevation);
+    //     }
+    //     const size_t layer_end_i = i;
+    //     const size_t n_layer_pts = (layer_end_i - layer_start_i);
+    //     const float avg_elevation =
+    //         static_cast<float>(sum_elevation / n_layer_pts);
 
-        double sum_sq_diff = 0.f;
-        for (size_t j = layer_start_i; j < layer_end_i; j++)
+    //     double sum_sq_diff = 0.;
+    //     for (size_t j = layer_start_i; j < layer_end_i; j++)
+    //     {
+    //         const double diff = static_cast<double>(
+    //             ordered_points[j].elevation - avg_elevation);
+    //         sum_sq_diff += diff * diff;
+    //     }
+    //     layer_stddevs.push_back(
+    //         static_cast<float>(std::sqrt(sum_sq_diff / n_layer_pts)));
+    //     layer_start_angles.push_back(ordered_points[layer_start_i].azimuth);
+    // }
+
+    // double sum_layer_stddev = 0.;
+    // for (const float stddev : layer_stddevs)
+    // {
+    //     sum_layer_stddev += static_cast<double>(stddev);
+    // }
+    // const float avg_layer_stddev =
+    //     static_cast<float>(sum_layer_stddev / layer_stddevs.size());
+
+    // double sum_azimuth = 0.;
+    // for (const float azimuth : layer_start_angles)
+    // {
+    //     sum_azimuth += static_cast<double>(azimuth);
+    // }
+    // const float avg_start_azimuth =
+    //     static_cast<float>(sum_azimuth / layer_start_angles.size());
+    // double sum_sq_diff = 0.;
+    // for (const float azimuth : layer_start_angles)
+    // {
+    //     const double diff = static_cast<double>(azimuth - avg_start_azimuth);
+    //     sum_sq_diff += diff * diff;
+    // }
+    // const float start_azimuth_stddev =
+    //     static_cast<float>(std::sqrt(sum_sq_diff / layer_start_angles.size()));
+
+    // double sum_azimuth_diff = 0.;
+    // if (this->prev_layer_start_angles.size() == layer_start_angles.size())
+    // {
+    //     for (size_t i = 0; i < layer_start_angles.size(); i++)
+    //     {
+    //         sum_azimuth_diff += std::abs(
+    //             layer_start_angles[i] - this->prev_layer_start_angles[i]);
+    //     }
+    // }
+    // this->prev_layer_start_angles = std::move(layer_start_angles);
+
+    static float max_elev_diff = 0.f;
+    static float max_azim_diff = 0.f;
+    static size_t n_elev_diff = 0;
+    static size_t n_azim_diff = 0;
+    static size_t n_samples = 0;
+    bool any_new = false;
+    if (this->prev_points.size() == ordered_points.size())
+    {
+        for (size_t i = 0; i < ordered_points.size(); i++)
         {
-            const double diff = static_cast<double>(
-                ordered_points[j].elevation - avg_elevation);
-            sum_sq_diff + diff* diff;
+            const LidarPoint& a = ordered_points[i];
+            const LidarPoint& b = this->prev_points[i];
+
+            const float elev_diff = std::abs(a.elevation - b.elevation);
+            const float azim_diff = std::abs(a.azimuth - b.azimuth);
+
+            n_elev_diff += static_cast<size_t>(elev_diff > 0.f);
+            n_azim_diff += static_cast<size_t>(azim_diff > 0.f);
+            any_new |= (elev_diff > 0.f || azim_diff > 0.f);
+
+            max_elev_diff = std::max(max_elev_diff, elev_diff);
+            max_azim_diff = std::max(max_azim_diff, azim_diff);
         }
-        layer_stddevs.push_back(
-            static_cast<float>(std::sqrt(sum_sq_diff / n_layer_pts)));
-        layer_start_angles.push_back(ordered_points[layer_start_i].azimuth);
+        n_samples += ordered_points.size() * 2;
+    }
+    this->prev_points = std::move(ordered_points);
+
+    if (any_new)
+    {
+        const double elev_diff_prop =
+            static_cast<double>(n_elev_diff) / static_cast<double>(n_samples);
+        const double azim_diff_prop =
+            static_cast<double>(n_azim_diff) / static_cast<double>(n_samples);
+
+        std::cout << "Proportion of points deviated in elevation is "
+                  << elev_diff_prop << " from " << n_samples
+                  << " samples\n"
+                     "Proportion of points deviated in azimuth is "
+                  << azim_diff_prop << " from " << n_samples
+                  << " samples\n"
+                     "Max elevation diff so far is "
+                  << max_elev_diff << " and max azimuth diff is "
+                  << max_azim_diff << '\n'
+                  << std::endl;
     }
 
-    double sum_azimuth = 0.f;
-    for (const float azimuth : layer_start_angles)
-    {
-        sum_azimuth += static_cast<double>(azimuth);
-    }
-    const float avg_azimuth =
-        static_cast<float>(sum_azimuth / layer_start_angles.size());
-    double sum_sq_diff = 0.f;
-    for (const float azimuth : layer_start_angles)
-    {
-        const double diff = static_cast<double>(azimuth - avg_azimuth);
-        sum_sq_diff += diff * diff;
-    }
-    const float azimuth_stddev =
-        static_cast<float>(std::sqrt(sum_sq_diff / layer_start_angles.size()));
+    // std::cout << "FRAME:\n"
+    //              "\tElevation avg stddev is "
+    //           << avg_layer_stddev
+    //           << "rad\n"
+    //              "\tStart azimuth avg is "
+    //           << avg_start_azimuth
+    //           << "rad\n"
+    //              "\tStart azimuth stddev of "
+    //           << start_azimuth_stddev
+    //           << "rad\n"
+    //              "\tStart azimuth total diff (prev) is "
+    //           << sum_azimuth_diff
+    //           << "rad\n"
+    //              "\tElevation max diff (prev) is "
+    //           << max_elev_diff
+    //           << "rad\n"
+    //              "\tAzimuth max diff (prev) is "
+    //           << max_azim_diff << "rad" << std::endl;
 }
 
 void MultiscanNode::runReceiver()
