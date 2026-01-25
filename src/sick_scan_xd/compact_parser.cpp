@@ -901,18 +901,19 @@ bool sick_scansegment_xd::CompactDataParser::Parse(const std::vector<uint8_t>& p
         {
             ScanSegmentParserOutput::Scangroup& scandata = moduleMeasurement.scandata[measurement_idx];
             // Apply optional range filter and optional transform
-            for(size_t line_idx = 0; line_idx < scandata.scanlines.size(); line_idx++)
-            {
-                std::vector<ScanSegmentParserOutput::LidarPoint>& points_in = scandata.scanlines[line_idx].points;
-                std::vector<ScanSegmentParserOutput::LidarPoint> points_out;
-                points_out.reserve(points_in.size());
-                for(size_t point_idx = 0; point_idx < points_in.size(); point_idx++)
-                {
-                    points_out.push_back(points_in[point_idx]);
-                }
-                scandata.scanlines[line_idx].points = points_out;
-            }
+            // for(size_t line_idx = 0; line_idx < scandata.scanlines.size(); line_idx++)
+            // {
+            //     std::vector<ScanSegmentParserOutput::LidarPoint>& points_in = scandata.scanlines[line_idx].points;
+            //     std::vector<ScanSegmentParserOutput::LidarPoint> points_out;
+            //     points_out.reserve(points_in.size());
+            //     for(size_t point_idx = 0; point_idx < points_in.size(); point_idx++)
+            //     {
+            //         points_out.push_back(points_in[point_idx]);
+            //     }
+            //     scandata.scanlines[line_idx].points = points_out;
+            // }
             // result.scandata.push_back(scandata);
+
             // Reorder lidar points by layer id (groupIdx) and echoIdx (identical to the msgpack scandata)
             // result.scandata[groupIdx] = all scandata of layer <groupIdx> appended to one scanline
             for(size_t line_idx = 0; line_idx < scandata.scanlines.size(); line_idx++)

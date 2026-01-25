@@ -45,7 +45,10 @@
 #include <limits>
 #include <thread>
 #include <vector>
+#include <fstream>
 #include <numbers>
+#include <sstream>
+#include <iostream>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -599,6 +602,16 @@ void MultiscanNode::publishScan()
     std::vector<LidarPoint> ordered_points;
     ordered_points.reserve(MS100_NOMINAL_POINTS_PER_SCAN);
 
+    // if (this->prev_points.empty())
+    // {
+    //     std::cout
+    //         << this->samples.size() << " : "
+    //         << this->samples[0].front().scandata.size() << " : "
+    //         << this->samples[0].front().scandata[0].scanlines.size() << " : "
+    //         << this->samples[0].front().scandata[0].scanlines[0].points.size()
+    //         << std::endl;
+    // }
+
     uint64_t earliest_ts = std::numeric_limits<uint64_t>::max();
     for (SegmentQueue& segment_queue : this->samples)
     {
@@ -744,6 +757,24 @@ void MultiscanNode::publishScan()
     //     }
     // }
     // this->prev_layer_start_angles = std::move(layer_start_angles);
+
+    // if (this->prev_points.empty())
+    // {
+    //     std::ostringstream ss;
+    //     ss << "/home/hoodi/multiscan_pt_coords_"
+    //        << std::chrono::duration_cast<std::chrono::seconds>(
+    //               std::chrono::system_clock::now().time_since_epoch())
+    //               .count()
+    //        << ".csv";
+    //     std::ofstream f;
+    //     f.open(ss.str(), std::ios::out);
+    //     for (const LidarPoint& p : ordered_points)
+    //     {
+    //         f << p.elevation << ", " << p.azimuth << "\n";
+    //     }
+    //     f.flush();
+    //     f.close();
+    // }
 
     static float max_elev_diff = 0.f;
     static float max_azim_diff = 0.f;
