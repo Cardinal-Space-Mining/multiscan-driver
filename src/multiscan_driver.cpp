@@ -50,6 +50,8 @@
 #include <sstream>
 #include <iostream>
 
+#include <Eigen/Core>
+
 #include <rclcpp/rclcpp.hpp>
 
 #include <std_msgs/msg/float32.hpp>
@@ -97,6 +99,118 @@ using namespace sick_scansegment_xd;
 #define ssxd     sick_scan_xd
 #define ssgmt_xd sick_scansegment_xd
 
+namespace ms136
+{
+
+constexpr size_t SEGMENTS_PER_FRAME = 12U;
+constexpr size_t NUM_LR_LAYERS = 14U;
+constexpr size_t NUM_HD_LAYERS = 2U;
+constexpr size_t POINTS_PER_SEGMENT_LR_LAYER = 30U;
+constexpr size_t POINTS_PER_SEGMENT_HD_LAYER = 240U;
+// echos get filterd when we apply different settings in the web dashboard
+constexpr size_t MAX_ECHOES_PER_POINT = 3U;
+
+// --- derived ---
+constexpr size_t NUM_LAYERS = (NUM_LR_LAYERS + NUM_HD_LAYERS);
+constexpr size_t MAX_POINTS_PER_SEGMENT_ECHO =
+    (NUM_LR_LAYERS * POINTS_PER_SEGMENT_LR_LAYER +
+     NUM_HD_LAYERS * POINTS_PER_SEGMENT_HD_LAYER);
+constexpr size_t MAX_POINTS_PER_SCAN =
+    (SEGMENTS_PER_FRAME * MAX_POINTS_PER_SEGMENT_ECHO * MAX_ECHOES_PER_POINT);
+constexpr size_t POINTS_PER_LR_LAYER =
+    (SEGMENTS_PER_FRAME * POINTS_PER_SEGMENT_LR_LAYER);
+constexpr size_t POINTS_PER_LR_SCAN = (POINTS_PER_LR_LAYER * NUM_LR_LAYERS);
+
+// --- dense mapping ---
+/* MAGIC NUMBERS TABLE!
+Layer,  DLayer, Elevation (rad),    PhaseL​ (rad),  PhaseL​ (deg)
+0,      0,      -0.390975,          2.961626,       169.69°
+1,      1,      -0.303366,          2.774730,       158.98°
+2,      2,      -0.218469,          2.715218,       155.57°
+3,      3,      -0.132131,          3.222567,       184.64°
+4,      4,      -0.048453,          2.724633,       156.11°
+6,      5,      0.034470,           2.785353,       159.59°
+7,      6,      0.117062,           2.958301,       169.50°
+8,      7,      0.219243,           6.099781,       349.50°
+9,      8,      0.294787,           5.912278,       338.75°
+10,     9,      0.375273,           5.841743,       334.71°
+11,     10,     0.458180,           0.103522,       5.93°
+12,     11,     0.544040,           5.817581,       333.32°
+14,     12,     0.634508,           5.873127,       336.51°
+15,     13,     0.731123,           6.094876,       349.21°
+*/
+
+constexpr std::array<size_t, ms136::NUM_LAYERS>
+    DENSE_LAYER_IDX_LUT{0, 1, 2, 3, 4, 14, 5, 6, 7, 8, 9, 10, 11, 14, 12, 13};
+constexpr std::array<float, ms136::NUM_LR_LAYERS> ELEVATION_LUT{
+    -0.390975,
+    -0.303366,
+    -0.218469,
+    -0.132131,
+    -0.048453,
+    0.034470,
+    0.117062,
+    0.219243,
+    0.294787,
+    0.375273,
+    0.458180,
+    0.544040,
+    0.634508,
+    0.731123};
+constexpr std::array<float, ms136::NUM_LR_LAYERS> AZIMUTH_OFFSET_LUT{
+    2.961626,
+    2.774730,
+    2.715218,
+    3.222567,
+    2.724633,
+    2.785353,
+    2.958301,
+    6.099781,
+    5.912278,
+    5.841743,
+    0.103522,
+    5.817581,
+    5.873127,
+    6.094876};
+
+inline size_t
+    computeDenseIdx(size_t raw_layer_idx, size_t seg_idx, size_t line_pt_idx)
+{
+    return (DENSE_LAYER_IDX_LUT[raw_layer_idx] * POINTS_PER_LR_LAYER) +
+           (seg_idx * POINTS_PER_SEGMENT_LR_LAYER) + line_pt_idx;
+}
+
+inline Eigen::Vector2f computeDirection(size_t dense_i)
+{
+    assert(dense_i < POINTS_PER_LR_SCAN);
+    const size_t layer_i = dense_i / POINTS_PER_LR_LAYER;
+    const size_t line_i = dense_i - (layer_i * POINTS_PER_LR_LAYER);
+    return Eigen::Vector2f{
+        ELEVATION_LUT[layer_i],
+        AZIMUTH_OFFSET_LUT[layer_i] + static_cast<float>(line_i) * 0.0174533f};
+}
+
+inline Eigen::Vector3f projectPoint(size_t dense_i, float range)
+{
+    const Eigen::Vector2f dir = computeDirection(dense_i);
+
+#define PHI   dir.x()
+#define THETA dir.y()
+    const float sin_phi = std::sin(PHI);
+    const float cos_phi = std::cos(PHI);
+    const float sin_theta = std::sin(THETA);
+    const float cos_theta = std::cos(THETA);
+#undef PHI
+#undef THETA
+
+    return Eigen::Vector3f{
+        range * cos_phi * cos_theta,
+        range * cos_phi * sin_theta,
+        range * sin_phi};
+}
+
+};  // namespace ms136
+
 
 class MultiscanNode : public rclcpp::Node
 {
@@ -129,17 +243,11 @@ protected:
 #endif
 
 private:
-    static constexpr size_t
-        MS100_SEGMENTS_PER_FRAME = 12U,
-        // points per segment * segments per frame = 10800 points per frame (with 1 echo)
-        MS100_POINTS_PER_SEGMENT_ECHO = 900U,
-        // echos get filterd when we apply different settings in the web dashboard
-        MS100_MAX_ECHOS_PER_POINT = 3U,
-        // constant from sick_scansegment_xd
-        RECV_BUFFER_N_BYTES = 64 * 1024;
+    // constant from sick_scansegment_xd
+    static constexpr size_t RECV_BUFFER_N_BYTES = 64 * 1024;
 
     using SegmentQueue = std::deque<ScanSegmentParserOutput>;
-    using SampleBuffer = std::array<SegmentQueue, MS100_SEGMENTS_PER_FRAME>;
+    using SampleBuffer = std::array<SegmentQueue, ms136::SEGMENTS_PER_FRAME>;
 
     struct
     {
@@ -157,6 +265,7 @@ private:
         double sopas_read_timeout = 3.;
         double error_restart_timeout = 3.;
         int max_segment_buffering = 3;
+        int echo_selection = 3;
     } config;
 
     SharedPub<PointCloudMsg> scan_pub;
@@ -171,9 +280,6 @@ private:
     std::vector<uint8_t> udp_buffer;
     SampleBuffer samples;
     size_t sample_fill_mask = 0;
-
-    std::vector<ScanSegmentParserOutput::LidarPoint> prev_points;
-    // std::vector<float> prev_layer_start_angles;
 
     std::thread recv_thread;
     std::atomic<bool> is_running = true;
@@ -258,6 +364,7 @@ MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
         "max_segment_buffers",
         this->config.max_segment_buffering,
         3);
+    util::declare_param(this, "echo_selection", this->config.echo_selection, 3);
 
     this->scan_pub = this->create_publisher<PointCloudMsg>(
         "lidar_scan",
@@ -587,54 +694,49 @@ void MultiscanNode::publishScan()
     using ScanLine = ScanSegmentParserOutput::Scanline;
     using LidarPoint = ScanSegmentParserOutput::LidarPoint;
 
-    constexpr size_t MS100_NOMINAL_POINTS_PER_SCAN =
-        MS100_POINTS_PER_SEGMENT_ECHO *
-        MS100_SEGMENTS_PER_FRAME;  // assume single echo
     constexpr size_t POINT_CONTINUOUS_BYTE_LEN =
         COMPUTE_NUM_CONTIGUOUS_POINT_FIELDS(MS_DRIVER_POINT_TYPE_FIELDS) * 4;
     constexpr size_t POINT_BYTE_LEN =
         COMPUTE_NUM_POINT_FIELDS(MS_DRIVER_POINT_TYPE_FIELDS) * 4;
 
     sensor_msgs::msg::PointCloud2 scan;
-    scan.data.reserve(MS100_NOMINAL_POINTS_PER_SCAN * POINT_BYTE_LEN);
+    scan.data.reserve(ms136::MAX_POINTS_PER_SCAN * POINT_BYTE_LEN);
     scan.data.resize(0);
 
-    std::vector<LidarPoint> ordered_points;
-    ordered_points.reserve(MS100_NOMINAL_POINTS_PER_SCAN);
-
-    // if (this->prev_points.empty())
-    // {
-    //     std::cout
-    //         << this->samples.size() << " : "
-    //         << this->samples[0].front().scandata.size() << " : "
-    //         << this->samples[0].front().scandata[0].scanlines.size() << " : "
-    //         << this->samples[0].front().scandata[0].scanlines[0].points.size()
-    //         << std::endl;
-    // }
+    std::array<uint16_t, ms136::POINTS_PER_LR_SCAN> dense_buff;
+    dense_buff.fill(0);
+    std::vector<ScanSegmentParserOutput::LidarPoint> all_points;
+    all_points.reserve(ms136::POINTS_PER_LR_SCAN);
 
     uint64_t earliest_ts = std::numeric_limits<uint64_t>::max();
-    for (SegmentQueue& segment_queue : this->samples)
+    // segments are groups which points come in from the network (think slice of a pie)
+    for (size_t seg_i = 0; seg_i < ms136::SEGMENTS_PER_FRAME; seg_i++)
     {
-        const ScanSegmentParserOutput& seg = segment_queue.front();
+        ScanSegmentParserOutput& seg = this->samples[seg_i].front();
         const uint64_t ts =
             static_cast<uint64_t>(seg.timestamp_sec) * 1000000000UL +
             static_cast<uint64_t>(seg.timestamp_nsec);
-        if (ts < earliest_ts)
-        {
-            earliest_ts = ts;
-        }
+        earliest_ts = std::min(ts, earliest_ts);
 
-        for (const ScanGroup& group : seg.scandata)
+        // groups contain points in a line for each echo - ie. 1 group for each layer
+        for (size_t grp_i = 0; grp_i < seg.scandata.size(); grp_i++)
         {
-            for (const ScanLine& line : group.scanlines)
+            ScanGroup& group = seg.scandata[grp_i];
+            // lines for each echo of all points in the current layer and segment
+            for (size_t line_i = 0; line_i < group.scanlines.size(); line_i++)
             {
-                ordered_points.insert(
-                    ordered_points.end(),
-                    line.points.begin(),
-                    line.points.end());
+                ScanLine& line = group.scanlines[line_i];
+                const bool export_this_line =
+                    (group.scanlines.size() == 1 ||
+                     line_i ==
+                         static_cast<size_t>(this->config.echo_selection)) &&
+                    line.points.size() <= ms136::POINTS_PER_SEGMENT_LR_LAYER;
 
-                for (const LidarPoint& point : line.points)
+                // each point in the line "segment"
+                for (size_t pt_i = 0; pt_i < line.points.size(); pt_i++)
                 {
+                    LidarPoint& point = line.points[pt_i];
+                    point.segmentIdx = static_cast<uint32_t>(seg_i);
                     scan.data.resize(scan.data.size() + POINT_BYTE_LEN);
                     uint8_t* const point_data =
                         scan.data.end().base() - POINT_BYTE_LEN;
@@ -654,10 +756,42 @@ void MultiscanNode::publishScan()
                     reinterpret_cast<float*>(point_data)[POINT_RB_F32_IDX] =
                         static_cast<float>(point.reflectorbit);
 #endif
+
+                    if (export_this_line)
+                    {
+                        constexpr uint16_t RANGE_MASK = 0x7FFF;
+                        const size_t dense_i = ms136::computeDenseIdx(
+                            point.groupIdx,
+                            seg_i,
+                            point.pointIdx);
+
+                        const float range_f_mm = point.range * 1000.f;
+                        if (range_f_mm < 1.f ||
+                            range_f_mm > static_cast<float>(RANGE_MASK))
+                        {
+                            dense_buff[dense_i] = 0;
+                        }
+                        else
+                        {
+                            dense_buff[dense_i] =
+                                static_cast<uint16_t>(range_f_mm) & RANGE_MASK;
+                        }
+
+                        dense_buff[dense_i] |=
+                            (static_cast<uint16_t>(point.reflectorbit) << 15);
+                    }
+                }
+
+                if (export_this_line)
+                {
+                    all_points.insert(
+                        all_points.end(),
+                        line.points.begin(),
+                        line.points.end());
                 }
             }
         }
-        segment_queue.clear();
+        this->samples[seg_i].clear();
     }
     this->sample_fill_mask = 0;
 
@@ -674,89 +808,48 @@ void MultiscanNode::publishScan()
 
     this->scan_pub->publish(scan);
 
-    constexpr float ONE_DEGREE_IN_RAD = 0.0174533f;
-    for (LidarPoint& point : ordered_points)
+    // --- testing ---
+
+    size_t n_empty_pts = 0;
+    double total_error = 0.;
+    float max_error = 0.f;
+    for (const LidarPoint& pt : all_points)
     {
-        if (point.azimuth < 0.f)
+        const size_t dense_i =
+            ms136::computeDenseIdx(pt.groupIdx, pt.segmentIdx, pt.pointIdx);
+        assert(dense_i < ms136::POINTS_PER_LR_SCAN);
+        const uint16_t range_mm = dense_buff[dense_i] & 0x7FFF;
+        if (range_mm)
         {
-            point.azimuth += std::numbers::pi_v<float> * 2.f;
+            const float range_m = static_cast<float>(range_mm) / 1000.f;
+            const Eigen::Vector3f proj_v3f =
+                ms136::projectPoint(dense_i, range_m);
+            const Eigen::Vector3f ref_v3f{pt.x, pt.y, pt.z};
+            const float error = (proj_v3f - ref_v3f).norm();
+            total_error += static_cast<double>(error);
+            max_error = std::max(max_error, error);
+        }
+        else
+        {
+            n_empty_pts++;
         }
     }
-    std::sort(
-        ordered_points.begin(),
-        ordered_points.end(),
-        [](const LidarPoint& a, const LidarPoint& b)
-        {
-            return a.elevation < b.elevation ||
-                   (std::abs(a.elevation - b.elevation) < ONE_DEGREE_IN_RAD &&
-                    a.azimuth < b.azimuth);
-        });
+    const size_t n_tested_pts = (all_points.size() - n_empty_pts);
 
-    // std::vector<float> layer_stddevs;
-    // std::vector<float> layer_start_angles;
-    // for (size_t i = 0; i < ordered_points.size();)
-    // {
-    //     const size_t layer_start_i = i;
-    //     const float layer_elevation = ordered_points[i].elevation;
-    //     double sum_elevation = 0.;
-    //     for (; i < ordered_points.size() &&
-    //            std::abs(ordered_points[i].elevation - layer_elevation) <
-    //                ONE_DEGREE_IN_RAD;
-    //          i++)
-    //     {
-    //         sum_elevation += static_cast<double>(ordered_points[i].elevation);
-    //     }
-    //     const size_t layer_end_i = i;
-    //     const size_t n_layer_pts = (layer_end_i - layer_start_i);
-    //     const float avg_elevation =
-    //         static_cast<float>(sum_elevation / n_layer_pts);
-
-    //     double sum_sq_diff = 0.;
-    //     for (size_t j = layer_start_i; j < layer_end_i; j++)
-    //     {
-    //         const double diff = static_cast<double>(
-    //             ordered_points[j].elevation - avg_elevation);
-    //         sum_sq_diff += diff * diff;
-    //     }
-    //     layer_stddevs.push_back(
-    //         static_cast<float>(std::sqrt(sum_sq_diff / n_layer_pts)));
-    //     layer_start_angles.push_back(ordered_points[layer_start_i].azimuth);
-    // }
-
-    // double sum_layer_stddev = 0.;
-    // for (const float stddev : layer_stddevs)
-    // {
-    //     sum_layer_stddev += static_cast<double>(stddev);
-    // }
-    // const float avg_layer_stddev =
-    //     static_cast<float>(sum_layer_stddev / layer_stddevs.size());
-
-    // double sum_azimuth = 0.;
-    // for (const float azimuth : layer_start_angles)
-    // {
-    //     sum_azimuth += static_cast<double>(azimuth);
-    // }
-    // const float avg_start_azimuth =
-    //     static_cast<float>(sum_azimuth / layer_start_angles.size());
-    // double sum_sq_diff = 0.;
-    // for (const float azimuth : layer_start_angles)
-    // {
-    //     const double diff = static_cast<double>(azimuth - avg_start_azimuth);
-    //     sum_sq_diff += diff * diff;
-    // }
-    // const float start_azimuth_stddev =
-    //     static_cast<float>(std::sqrt(sum_sq_diff / layer_start_angles.size()));
-
-    // double sum_azimuth_diff = 0.;
-    // if (this->prev_layer_start_angles.size() == layer_start_angles.size())
-    // {
-    //     for (size_t i = 0; i < layer_start_angles.size(); i++)
-    //     {
-    //         sum_azimuth_diff += std::abs(
-    //             layer_start_angles[i] - this->prev_layer_start_angles[i]);
-    //     }
-    // }
-    // this->prev_layer_start_angles = std::move(layer_start_angles);
+    std::cout << "FRAME\n"
+                 "\tInput points : "
+              << all_points.size()
+              << "\n"
+                 "\tEmpty points : "
+              << n_empty_pts
+              << "\n"
+                 "\tTotal repojection error : "
+              << total_error << " (" << n_tested_pts << " pts // avg : "
+              << (total_error / static_cast<double>(n_tested_pts))
+              << ")\n"
+                 "\tMax reprojection error : "
+              << max_error << "\n"
+              << std::endl;
 
     // if (this->prev_points.empty())
     // {
@@ -768,78 +861,18 @@ void MultiscanNode::publishScan()
     //        << ".csv";
     //     std::ofstream f;
     //     f.open(ss.str(), std::ios::out);
-    //     for (const LidarPoint& p : ordered_points)
+    //     for (const LidarPoint& p : all_points)
     //     {
-    //         f << p.elevation << ", " << p.azimuth << "\n";
+    //         f << p.elevation << ", "
+    //             << p.azimuth << ", "
+    //             << p.segmentIdx << ", "
+    //             << p.groupIdx << ", "
+    //             << p.pointIdx << ", "
+    //             << p.echoIdx << "\n";
     //     }
     //     f.flush();
     //     f.close();
     // }
-
-    static float max_elev_diff = 0.f;
-    static float max_azim_diff = 0.f;
-    static size_t n_elev_diff = 0;
-    static size_t n_azim_diff = 0;
-    static size_t n_samples = 0;
-    bool any_new = false;
-    if (this->prev_points.size() == ordered_points.size())
-    {
-        for (size_t i = 0; i < ordered_points.size(); i++)
-        {
-            const LidarPoint& a = ordered_points[i];
-            const LidarPoint& b = this->prev_points[i];
-
-            const float elev_diff = std::abs(a.elevation - b.elevation);
-            const float azim_diff = std::abs(a.azimuth - b.azimuth);
-
-            n_elev_diff += static_cast<size_t>(elev_diff > 0.f);
-            n_azim_diff += static_cast<size_t>(azim_diff > 0.f);
-            any_new |= (elev_diff > 0.f || azim_diff > 0.f);
-
-            max_elev_diff = std::max(max_elev_diff, elev_diff);
-            max_azim_diff = std::max(max_azim_diff, azim_diff);
-        }
-        n_samples += ordered_points.size() * 2;
-    }
-    this->prev_points = std::move(ordered_points);
-
-    if (any_new)
-    {
-        const double elev_diff_prop =
-            static_cast<double>(n_elev_diff) / static_cast<double>(n_samples);
-        const double azim_diff_prop =
-            static_cast<double>(n_azim_diff) / static_cast<double>(n_samples);
-
-        std::cout << "Proportion of points deviated in elevation is "
-                  << elev_diff_prop << " from " << n_samples
-                  << " samples\n"
-                     "Proportion of points deviated in azimuth is "
-                  << azim_diff_prop << " from " << n_samples
-                  << " samples\n"
-                     "Max elevation diff so far is "
-                  << max_elev_diff << " and max azimuth diff is "
-                  << max_azim_diff << '\n'
-                  << std::endl;
-    }
-
-    // std::cout << "FRAME:\n"
-    //              "\tElevation avg stddev is "
-    //           << avg_layer_stddev
-    //           << "rad\n"
-    //              "\tStart azimuth avg is "
-    //           << avg_start_azimuth
-    //           << "rad\n"
-    //              "\tStart azimuth stddev of "
-    //           << start_azimuth_stddev
-    //           << "rad\n"
-    //              "\tStart azimuth total diff (prev) is "
-    //           << sum_azimuth_diff
-    //           << "rad\n"
-    //              "\tElevation max diff (prev) is "
-    //           << max_elev_diff
-    //           << "rad\n"
-    //              "\tAzimuth max diff (prev) is "
-    //           << max_azim_diff << "rad" << std::endl;
 }
 
 void MultiscanNode::runReceiver()
@@ -917,7 +950,7 @@ void MultiscanNode::runReceiver()
                 }
 
                 if (this->sample_fill_mask >=
-                    (1 << MS100_SEGMENTS_PER_FRAME) - 1)
+                    (1 << ms136::SEGMENTS_PER_FRAME) - 1)
                 {
                     PROFILING_NOTIFY(export_cloud);
                     this->publishScan();

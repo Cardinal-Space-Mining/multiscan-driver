@@ -131,21 +131,22 @@ namespace sick_scansegment_xd
         class LidarPoint
         {
         public:
-            LidarPoint() : x(0), y(0), z(0), i(0), range(0), azimuth(0), elevation(0), groupIdx(0), echoIdx(0), pointIdx(0), lidar_timestamp_microsec(0), reflectorbit(0) {}
+            LidarPoint() = default;
             LidarPoint(float _x, float _y, float _z, float _i, float _range, float _azimuth, float _elevation, int _groupIdx, int _echoIdx, int _pointIdx, uint64_t _lidar_timestamp_microsec, uint8_t _reflector_bit)
                 : x(_x), y(_y), z(_z), i(_i), range(_range), azimuth(_azimuth), elevation(_elevation), groupIdx(_groupIdx), echoIdx(_echoIdx), pointIdx(_pointIdx), lidar_timestamp_microsec(_lidar_timestamp_microsec), reflectorbit(_reflector_bit) {}
-            float x; // cartesian x coordinate in meter
-            float y; // cartesian y coordinate in meter
-            float z; // cartesian z coordinate in meter
-            float i; // intensity
-            float range;     // polar coordinate range in meter
-            float azimuth;   // polar coordinate azimuth in radians
-            float elevation; // polar coordinate elevation in radians
-            uint32_t groupIdx;    // group index (layer), 0 <= groupIdx < 16 for multiScan136
-            uint32_t echoIdx;     // echo index, 0 <= echoIdx < 3 for multiScan136
-            uint32_t pointIdx;    // point index, 0 <= pointIdx < 30 resp. 0 <= pointIdx < 240 for multiScan136
-            uint64_t lidar_timestamp_microsec; // lidar timestamp in microseconds
-            uint8_t reflectorbit; // optional reflector bit, 0 or 1, default: 0
+            float x{0}; // cartesian x coordinate in meter
+            float y{0}; // cartesian y coordinate in meter
+            float z{0}; // cartesian z coordinate in meter
+            float i{0}; // intensity
+            float range{0};     // polar coordinate range in meter
+            float azimuth{0};   // polar coordinate azimuth in radians
+            float elevation{0}; // polar coordinate elevation in radians
+            uint32_t segmentIdx{0};
+            uint32_t groupIdx{0};    // group index (layer), 0 <= groupIdx < 16 for multiScan136
+            uint32_t echoIdx{0};     // echo index, 0 <= echoIdx < 3 for multiScan136
+            uint32_t pointIdx{0};    // point index, 0 <= pointIdx < 30 resp. 0 <= pointIdx < 240 for multiScan136
+            uint64_t lidar_timestamp_microsec{0}; // lidar timestamp in microseconds
+            uint8_t reflectorbit{0}; // optional reflector bit, 0 or 1, default: 0
         };
 
         /*
