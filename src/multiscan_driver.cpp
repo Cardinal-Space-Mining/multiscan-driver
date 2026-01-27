@@ -45,17 +45,11 @@
 #include <limits>
 #include <thread>
 #include <vector>
-#include <fstream>
-#include <numbers>
-#include <sstream>
-#include <iostream>
+// #include <iostream>
 
 #include <Eigen/Core>
 
 #include <rclcpp/rclcpp.hpp>
-
-#include <std_msgs/msg/float32.hpp>
-#include <std_msgs/msg/u_int32.hpp>
 
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -73,9 +67,10 @@
 #include "ros_utils.hpp"
 #include "point_fields.hpp"
 #ifndef MS_DRIVER_POINT_TYPE_FIELDS
-    #define MS_DRIVER_POINT_TYPE_FIELDS MS_POINT_FIELD_ENABLE_XYZPTR
+    #define MS_DRIVER_POINT_TYPE_FIELDS MS_POINT_FIELD_ENABLE_ALL
 #endif
 #include "point_type.hpp"
+#include "multiscan_data.hpp"
 
 
 #define STATS_PUB_FREQUNCY      10U
@@ -98,118 +93,6 @@ using namespace sick_scansegment_xd;
 
 #define ssxd     sick_scan_xd
 #define ssgmt_xd sick_scansegment_xd
-
-namespace ms136
-{
-
-constexpr size_t SEGMENTS_PER_FRAME = 12U;
-constexpr size_t NUM_LR_LAYERS = 14U;
-constexpr size_t NUM_HD_LAYERS = 2U;
-constexpr size_t POINTS_PER_SEGMENT_LR_LAYER = 30U;
-constexpr size_t POINTS_PER_SEGMENT_HD_LAYER = 240U;
-// echos get filterd when we apply different settings in the web dashboard
-constexpr size_t MAX_ECHOES_PER_POINT = 3U;
-
-// --- derived ---
-constexpr size_t NUM_LAYERS = (NUM_LR_LAYERS + NUM_HD_LAYERS);
-constexpr size_t MAX_POINTS_PER_SEGMENT_ECHO =
-    (NUM_LR_LAYERS * POINTS_PER_SEGMENT_LR_LAYER +
-     NUM_HD_LAYERS * POINTS_PER_SEGMENT_HD_LAYER);
-constexpr size_t MAX_POINTS_PER_SCAN =
-    (SEGMENTS_PER_FRAME * MAX_POINTS_PER_SEGMENT_ECHO * MAX_ECHOES_PER_POINT);
-constexpr size_t POINTS_PER_LR_LAYER =
-    (SEGMENTS_PER_FRAME * POINTS_PER_SEGMENT_LR_LAYER);
-constexpr size_t POINTS_PER_LR_SCAN = (POINTS_PER_LR_LAYER * NUM_LR_LAYERS);
-
-// --- dense mapping ---
-/* MAGIC NUMBERS TABLE!
-Layer,  DLayer, Elevation (rad),    PhaseL​ (rad),  PhaseL​ (deg)
-0,      0,      -0.390975,          2.961626,       169.69°
-1,      1,      -0.303366,          2.774730,       158.98°
-2,      2,      -0.218469,          2.715218,       155.57°
-3,      3,      -0.132131,          3.222567,       184.64°
-4,      4,      -0.048453,          2.724633,       156.11°
-6,      5,      0.034470,           2.785353,       159.59°
-7,      6,      0.117062,           2.958301,       169.50°
-8,      7,      0.219243,           6.099781,       349.50°
-9,      8,      0.294787,           5.912278,       338.75°
-10,     9,      0.375273,           5.841743,       334.71°
-11,     10,     0.458180,           0.103522,       5.93°
-12,     11,     0.544040,           5.817581,       333.32°
-14,     12,     0.634508,           5.873127,       336.51°
-15,     13,     0.731123,           6.094876,       349.21°
-*/
-
-constexpr std::array<size_t, ms136::NUM_LAYERS>
-    DENSE_LAYER_IDX_LUT{0, 1, 2, 3, 4, 14, 5, 6, 7, 8, 9, 10, 11, 14, 12, 13};
-constexpr std::array<float, ms136::NUM_LR_LAYERS> ELEVATION_LUT{
-    -0.390975,
-    -0.303366,
-    -0.218469,
-    -0.132131,
-    -0.048453,
-    0.034470,
-    0.117062,
-    0.219243,
-    0.294787,
-    0.375273,
-    0.458180,
-    0.544040,
-    0.634508,
-    0.731123};
-constexpr std::array<float, ms136::NUM_LR_LAYERS> AZIMUTH_OFFSET_LUT{
-    2.961626,
-    2.774730,
-    2.715218,
-    3.222567,
-    2.724633,
-    2.785353,
-    2.958301,
-    6.099781,
-    5.912278,
-    5.841743,
-    0.103522,
-    5.817581,
-    5.873127,
-    6.094876};
-
-inline size_t
-    computeDenseIdx(size_t raw_layer_idx, size_t seg_idx, size_t line_pt_idx)
-{
-    return (DENSE_LAYER_IDX_LUT[raw_layer_idx] * POINTS_PER_LR_LAYER) +
-           (seg_idx * POINTS_PER_SEGMENT_LR_LAYER) + line_pt_idx;
-}
-
-inline Eigen::Vector2f computeDirection(size_t dense_i)
-{
-    assert(dense_i < POINTS_PER_LR_SCAN);
-    const size_t layer_i = dense_i / POINTS_PER_LR_LAYER;
-    const size_t line_i = dense_i - (layer_i * POINTS_PER_LR_LAYER);
-    return Eigen::Vector2f{
-        ELEVATION_LUT[layer_i],
-        AZIMUTH_OFFSET_LUT[layer_i] + static_cast<float>(line_i) * 0.0174533f};
-}
-
-inline Eigen::Vector3f projectPoint(size_t dense_i, float range)
-{
-    const Eigen::Vector2f dir = computeDirection(dense_i);
-
-#define PHI   dir.x()
-#define THETA dir.y()
-    const float sin_phi = std::sin(PHI);
-    const float cos_phi = std::cos(PHI);
-    const float sin_theta = std::sin(THETA);
-    const float cos_theta = std::cos(THETA);
-#undef PHI
-#undef THETA
-
-    return Eigen::Vector3f{
-        range * cos_phi * cos_theta,
-        range * cos_phi * sin_theta,
-        range * sin_phi};
-}
-
-};  // namespace ms136
 
 
 class MultiscanNode : public rclcpp::Node
@@ -303,6 +186,101 @@ void moveSegmentsNoIMU(ScanSegmentParserOutput& a, ScanSegmentParserOutput& b)
     a.segmentIndex = b.segmentIndex;
     a.telegramCnt = b.telegramCnt;
 }
+
+// void runTests(
+//     const std::vector<ScanSegmentParserOutput::LidarPoint>& all_points)
+// {
+//     ms136::redux::DenseBuffer dense_buff;
+//     dense_buff.fill(0);
+
+//     for (const auto& pt : all_points)
+//     {
+//         ms136::redux::addPointToBuffer(
+//             dense_buff,
+//             pt.layerIdx,
+//             pt.pointIdx,
+//             pt.range,
+//             pt.reflectorbit);
+//     }
+
+//     ms136::redux::PackedBuffer packed;
+//     ms136::redux::packBuffer(packed, dense_buff);
+
+//     ms136::redux::DenseBuffer unpacked;
+//     ms136::redux::unpackBuffer(unpacked, packed);
+
+//     size_t n_empty_pts = 0;
+//     double total_error = 0.;
+//     float max_error = 0.f;
+//     for (const auto& pt : all_points)
+//     {
+//         const size_t dense_i =
+//             ms136::redux::computeDenseIdx(pt.layerIdx, pt.pointIdx);
+//         assert(dense_i < ms136::POINTS_PER_LR_SCAN);
+//         const uint16_t range_mm = unpacked[dense_i] & ms136::redux::RANGE_MASK;
+//         if (range_mm)
+//         {
+//             const float range_m = static_cast<float>(range_mm) / 1000.f;
+//             const Eigen::Vector3f proj_v3f =
+//                 ms136::redux::projectPoint(dense_i, range_m);
+//             const Eigen::Vector3f ref_v3f{pt.x, pt.y, pt.z};
+//             const float error = (proj_v3f - ref_v3f).norm();
+//             total_error += static_cast<double>(error);
+//             max_error = std::max(max_error, error);
+//         }
+//         else
+//         {
+//             n_empty_pts++;
+//         }
+//     }
+//     const size_t n_tested_pts = (all_points.size() - n_empty_pts);
+
+//     std::cout << "FRAME\n"
+//                  "\tInput points : "
+//               << all_points.size()
+//               << "\n"
+//                  "\tEmpty points : "
+//               << n_empty_pts
+//               << "\n"
+//                  "\tTotal repojection error : "
+//               << total_error << " (" << n_tested_pts << " pts // avg : "
+//               << (total_error / static_cast<double>(n_tested_pts))
+//               << ")\n"
+//                  "\tMax reprojection error : "
+//               << max_error
+//               << "\n"
+//                  "\tPack/Unpack equal? : "
+//               << (dense_buff == unpacked)
+//               << "\n"
+//                  "\tReduction % : "
+//               << static_cast<double>(dense_buff.size() - packed.size()) /
+//                      dense_buff.size()
+//               << "\n"
+//               << std::endl;
+
+//     // if (this->prev_points.empty())
+//     // {
+//     //     std::ostringstream ss;
+//     //     ss << "/home/hoodi/multiscan_pt_coords_"
+//     //        << std::chrono::duration_cast<std::chrono::seconds>(
+//     //               std::chrono::system_clock::now().time_since_epoch())
+//     //               .count()
+//     //        << ".csv";
+//     //     std::ofstream f;
+//     //     f.open(ss.str(), std::ios::out);
+//     //     for (const LidarPoint& p : all_points)
+//     //     {
+//     //         f << p.elevation << ", "
+//     //             << p.azimuth << ", "
+//     //             << p.segmentIdx << ", "
+//     //             << p.layerIdx << ", "
+//     //             << p.pointIdx << ", "
+//     //             << p.echoIdx << "\n";
+//     //     }
+//     //     f.flush();
+//     //     f.close();
+//     // }
+// }
 
 
 MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
@@ -690,7 +668,7 @@ void MultiscanNode::addSegment(ScanSegmentParserOutput& seg)
 
 void MultiscanNode::publishScan()
 {
-    using ScanGroup = ScanSegmentParserOutput::Scangroup;
+    using ScanLayer = ScanSegmentParserOutput::Scangroup;
     using ScanLine = ScanSegmentParserOutput::Scanline;
     using LidarPoint = ScanSegmentParserOutput::LidarPoint;
 
@@ -703,10 +681,8 @@ void MultiscanNode::publishScan()
     scan.data.reserve(ms136::MAX_POINTS_PER_SCAN * POINT_BYTE_LEN);
     scan.data.resize(0);
 
-    std::array<uint16_t, ms136::POINTS_PER_LR_SCAN> dense_buff;
-    dense_buff.fill(0);
-    std::vector<ScanSegmentParserOutput::LidarPoint> all_points;
-    all_points.reserve(ms136::POINTS_PER_LR_SCAN);
+    // std::vector<ScanSegmentParserOutput::LidarPoint> all_points;
+    // all_points.reserve(ms136::POINTS_PER_LR_SCAN);
 
     uint64_t earliest_ts = std::numeric_limits<uint64_t>::max();
     // segments are groups which points come in from the network (think slice of a pie)
@@ -718,78 +694,53 @@ void MultiscanNode::publishScan()
             static_cast<uint64_t>(seg.timestamp_nsec);
         earliest_ts = std::min(ts, earliest_ts);
 
-        // groups contain points in a line for each echo - ie. 1 group for each layer
-        for (size_t grp_i = 0; grp_i < seg.scandata.size(); grp_i++)
+        for (ScanLayer& layer : seg.scandata)
         {
-            ScanGroup& group = seg.scandata[grp_i];
-            // lines for each echo of all points in the current layer and segment
-            for (size_t line_i = 0; line_i < group.scanlines.size(); line_i++)
+            if (layer.scanlines.empty())
             {
-                ScanLine& line = group.scanlines[line_i];
-                const bool export_this_line =
-                    (group.scanlines.size() == 1 ||
-                     line_i ==
-                         static_cast<size_t>(this->config.echo_selection)) &&
-                    line.points.size() <= ms136::POINTS_PER_SEGMENT_LR_LAYER;
+                continue;
+            }
+            const int echo_i =
+                (static_cast<size_t>(this->config.echo_selection - 1) <
+                 layer.scanlines.size())
+                    ? this->config.echo_selection
+                    : 0;
+            ScanLine& line = layer.scanlines[echo_i];
+            const size_t points_per_seg =
+                (line.points.size() <= ms136::POINTS_PER_SEGMENT_LR_LAYER)
+                    ? ms136::POINTS_PER_SEGMENT_LR_LAYER
+                    : ms136::POINTS_PER_SEGMENT_HD_LAYER;
 
-                // each point in the line "segment"
-                for (size_t pt_i = 0; pt_i < line.points.size(); pt_i++)
-                {
-                    LidarPoint& point = line.points[pt_i];
-                    point.segmentIdx = static_cast<uint32_t>(seg_i);
-                    scan.data.resize(scan.data.size() + POINT_BYTE_LEN);
-                    uint8_t* const point_data =
-                        scan.data.end().base() - POINT_BYTE_LEN;
+            for (LidarPoint& point : line.points)
+            {
+                // rescale point idx to be per-layer instead of per-segment
+                point.pointIdx = (seg_i * points_per_seg) + point.pointIdx;
 
-                    memcpy(point_data, &point, POINT_CONTINUOUS_BYTE_LEN);
+                scan.data.resize(scan.data.size() + POINT_BYTE_LEN);
+                uint8_t* const point_data =
+                    scan.data.end().base() - POINT_BYTE_LEN;
+
+                memcpy(point_data, &point, POINT_CONTINUOUS_BYTE_LEN);
 
 #if POINT_FIELDS_HAVE_TIMESTAMP(MS_DRIVER_POINT_TYPE_FIELDS)
-                    memcpy(
-                        point_data + POINT_CONTINUOUS_BYTE_LEN,
-                        &point.lidar_timestamp_microsec,
-                        sizeof(point.lidar_timestamp_microsec));
+                memcpy(
+                    point_data + POINT_CONTINUOUS_BYTE_LEN,
+                    &point.lidar_timestamp_microsec,
+                    sizeof(point.lidar_timestamp_microsec));
 #endif
 #if POINT_FIELDS_HAVE_REFLECTOR(MS_DRIVER_POINT_TYPE_FIELDS)
     #define POINT_RB_F32_IDX                                             \
         ((POINT_CONTINUOUS_BYTE_LEN / sizeof(float)) +                   \
          (POINT_FIELDS_HAVE_TIMESTAMP(MS_DRIVER_POINT_TYPE_FIELDS) * 2))
-                    reinterpret_cast<float*>(point_data)[POINT_RB_F32_IDX] =
-                        static_cast<float>(point.reflectorbit);
+                reinterpret_cast<float*>(point_data)[POINT_RB_F32_IDX] =
+                    static_cast<float>(point.reflectorbit);
 #endif
-
-                    if (export_this_line)
-                    {
-                        constexpr uint16_t RANGE_MASK = 0x7FFF;
-                        const size_t dense_i = ms136::computeDenseIdx(
-                            point.groupIdx,
-                            seg_i,
-                            point.pointIdx);
-
-                        const float range_f_mm = point.range * 1000.f;
-                        if (range_f_mm < 1.f ||
-                            range_f_mm > static_cast<float>(RANGE_MASK))
-                        {
-                            dense_buff[dense_i] = 0;
-                        }
-                        else
-                        {
-                            dense_buff[dense_i] =
-                                static_cast<uint16_t>(range_f_mm) & RANGE_MASK;
-                        }
-
-                        dense_buff[dense_i] |=
-                            (static_cast<uint16_t>(point.reflectorbit) << 15);
-                    }
-                }
-
-                if (export_this_line)
-                {
-                    all_points.insert(
-                        all_points.end(),
-                        line.points.begin(),
-                        line.points.end());
-                }
             }
+
+            // all_points.insert(
+            //     all_points.end(),
+            //     line.points.begin(),
+            //     line.points.end());
         }
         this->samples[seg_i].clear();
     }
@@ -808,71 +759,7 @@ void MultiscanNode::publishScan()
 
     this->scan_pub->publish(scan);
 
-    // --- testing ---
-
-    size_t n_empty_pts = 0;
-    double total_error = 0.;
-    float max_error = 0.f;
-    for (const LidarPoint& pt : all_points)
-    {
-        const size_t dense_i =
-            ms136::computeDenseIdx(pt.groupIdx, pt.segmentIdx, pt.pointIdx);
-        assert(dense_i < ms136::POINTS_PER_LR_SCAN);
-        const uint16_t range_mm = dense_buff[dense_i] & 0x7FFF;
-        if (range_mm)
-        {
-            const float range_m = static_cast<float>(range_mm) / 1000.f;
-            const Eigen::Vector3f proj_v3f =
-                ms136::projectPoint(dense_i, range_m);
-            const Eigen::Vector3f ref_v3f{pt.x, pt.y, pt.z};
-            const float error = (proj_v3f - ref_v3f).norm();
-            total_error += static_cast<double>(error);
-            max_error = std::max(max_error, error);
-        }
-        else
-        {
-            n_empty_pts++;
-        }
-    }
-    const size_t n_tested_pts = (all_points.size() - n_empty_pts);
-
-    std::cout << "FRAME\n"
-                 "\tInput points : "
-              << all_points.size()
-              << "\n"
-                 "\tEmpty points : "
-              << n_empty_pts
-              << "\n"
-                 "\tTotal repojection error : "
-              << total_error << " (" << n_tested_pts << " pts // avg : "
-              << (total_error / static_cast<double>(n_tested_pts))
-              << ")\n"
-                 "\tMax reprojection error : "
-              << max_error << "\n"
-              << std::endl;
-
-    // if (this->prev_points.empty())
-    // {
-    //     std::ostringstream ss;
-    //     ss << "/home/hoodi/multiscan_pt_coords_"
-    //        << std::chrono::duration_cast<std::chrono::seconds>(
-    //               std::chrono::system_clock::now().time_since_epoch())
-    //               .count()
-    //        << ".csv";
-    //     std::ofstream f;
-    //     f.open(ss.str(), std::ios::out);
-    //     for (const LidarPoint& p : all_points)
-    //     {
-    //         f << p.elevation << ", "
-    //             << p.azimuth << ", "
-    //             << p.segmentIdx << ", "
-    //             << p.groupIdx << ", "
-    //             << p.pointIdx << ", "
-    //             << p.echoIdx << "\n";
-    //     }
-    //     f.flush();
-    //     f.close();
-    // }
+    // runTests(all_points);
 }
 
 void MultiscanNode::runReceiver()

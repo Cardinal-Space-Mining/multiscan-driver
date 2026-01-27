@@ -245,7 +245,7 @@ std::string sick_scansegment_xd::CompactModuleMeasurementData::to_string() const
                 description << (point_idx > 0 ? "," : "") << "(";
                 description << point.x << "," << point.y << "," << point.z << "," << point.i << ",";
                 description << point.range << "," << point.azimuth << "," << point.elevation << ",";
-                description << point.groupIdx << "," << point.echoIdx << "," << point.pointIdx << ")";
+                description << point.layerIdx << "," << point.echoIdx << "," << point.pointIdx << ")";
             }
             description << "]" << (scanlines.size() > 1 ? "\n": "");
         }
@@ -673,7 +673,7 @@ bool sick_scansegment_xd::CompactDataParser::ParseModuleMeasurementData(const ui
                 points[echo_idx].y = points[echo_idx].range * sin_azimuth * cos_elevation;
                 points[echo_idx].z = points[echo_idx].range * sin_elevation;
                 points[echo_idx].echoIdx = echo_idx;
-                points[echo_idx].groupIdx = groupIdx;
+                points[echo_idx].layerIdx = groupIdx;
                 points[echo_idx].pointIdx = point_idx;
                 points[echo_idx].lidar_timestamp_microsec = lidar_timestamp_microsec;
                 points[echo_idx].reflectorbit |= (beam_property & 0x01); // reflector bit is set, if a reflector is detected on any number of echos
@@ -809,7 +809,7 @@ bool sick_scansegment_xd::CompactDataParser::ParseSegment(const uint8_t* payload
                     ROS_INFO_STREAM("        CompactDataParser (module " << module_idx << ", group " << group_idx << ", line " << line_idx << "): " << points.size() << " points");
                     for(size_t point_idx = 0; point_idx < points.size(); point_idx++)
                     {
-                        ROS_INFO_STREAM("        [" << points[point_idx].x << "," << points[point_idx].y << "," << points[point_idx].z << "," << points[point_idx].range << "," << points[point_idx].azimuth << "," << points[point_idx].elevation << "," << points[point_idx].groupIdx << "," << points[point_idx].pointIdx << "]");
+                        ROS_INFO_STREAM("        [" << points[point_idx].x << "," << points[point_idx].y << "," << points[point_idx].z << "," << points[point_idx].range << "," << points[point_idx].azimuth << "," << points[point_idx].elevation << "," << points[point_idx].layerIdx << "," << points[point_idx].pointIdx << "]");
                     }
                 }
             }
@@ -914,15 +914,15 @@ bool sick_scansegment_xd::CompactDataParser::Parse(const std::vector<uint8_t>& p
             // }
             // result.scandata.push_back(scandata);
 
-            // Reorder lidar points by layer id (groupIdx) and echoIdx (identical to the msgpack scandata)
-            // result.scandata[groupIdx] = all scandata of layer <groupIdx> appended to one scanline
+            // Reorder lidar points by layer id (layerIdx) and echoIdx (identical to the msgpack scandata)
+            // result.scandata[layerIdx] = all scandata of layer <layerIdx> appended to one scanline
             for(size_t line_idx = 0; line_idx < scandata.scanlines.size(); line_idx++)
             {
                 std::vector<ScanSegmentParserOutput::LidarPoint>& points = scandata.scanlines[line_idx].points;
                 for(size_t point_idx = 0; point_idx < points.size(); point_idx++)
                 {
                     ScanSegmentParserOutput::LidarPoint& point = points[point_idx];
-                    size_t groupIdx = point.groupIdx;
+                    size_t groupIdx = point.layerIdx;
                     size_t echoIdx = point.echoIdx;
                     while(result.scandata.size() <= groupIdx)
                     {
