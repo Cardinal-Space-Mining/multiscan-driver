@@ -54,8 +54,10 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
-#include "csm_metrics/stats.hpp"
-#include "csm_metrics/profiling.hpp"
+#include <csm_metrics/stats.hpp>
+#include <csm_metrics/profiling.hpp>
+
+#include <multiscan_driver/multiscan_spec.hpp>
 
 #include "sick_scan_xd/udp_sockets.h"
 #include "sick_scan_xd/msgpack_parser.h"
@@ -70,7 +72,6 @@
     #define MS_DRIVER_POINT_TYPE_FIELDS MS_POINT_FIELD_ENABLE_ALL
 #endif
 #include "point_type.hpp"
-#include "multiscan_data.hpp"
 
 
 #define STATS_PUB_FREQUNCY      10U
