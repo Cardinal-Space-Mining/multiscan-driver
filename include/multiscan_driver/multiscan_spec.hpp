@@ -141,17 +141,19 @@ using PackedBuffer = std::vector<uint16_t>;
 
 
 /* Quantize a range value to 15 bits (mm-precision) and append a reflector bit */
-inline constexpr uint16_t reducePoint(float range, uint8_t reflector)
+inline constexpr uint16_t
+    reducePoint(float range, uint8_t reflector, float min_range_mm = 200.f)
 {
     const float range_f_mm = range * 1000.f;
-    const uint16_t reflector_bit = static_cast<uint16_t>(reflector) << 15;
-    if (range_f_mm < 200.f || range_f_mm > static_cast<float>(RANGE_MASK))
+    if (range_f_mm < min_range_mm ||
+        range_f_mm > static_cast<float>(RANGE_MASK))
     {
-        return reflector_bit;
+        return 0;
     }
     else
     {
-        return reflector_bit | (static_cast<uint16_t>(range_f_mm) & RANGE_MASK);
+        return (static_cast<uint16_t>(reflector) << 15) |
+               (static_cast<uint16_t>(range_f_mm) & RANGE_MASK);
     }
 }
 
@@ -209,6 +211,11 @@ inline Eigen::Vector3f projectPoint(size_t dense_i, float range)
         range * cos_phi * cos_theta,
         range * cos_phi * sin_theta,
         range * sin_phi};
+}
+
+inline Eigen::Vector3f projectPoint(size_t dense_i, uint16_t dense_pt)
+{
+    return projectPoint(dense_i, getRangeMeters(dense_pt));
 }
 
 /* Insert raw point into buffer using calculators */
