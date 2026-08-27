@@ -66,7 +66,7 @@
 #include "sick_scan_xd/sick_scan_common_tcp.h"
 #include "sick_scan_xd/sopas_services.h"
 
-#include "ros_utils.hpp"
+#include <csm_utils/ros_utils.hpp>
 #include "point_fields.hpp"
 #ifndef MS_DRIVER_POINT_TYPE_FIELDS
     #define MS_DRIVER_POINT_TYPE_FIELDS MS_POINT_FIELD_ENABLE_ALL
