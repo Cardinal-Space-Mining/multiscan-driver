@@ -11,6 +11,8 @@ find_package(tf2_ros REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(csm_metrics REQUIRED)
 
+standard_compile_options()
+
 include_directories(${EIGEN3_INCLUDE_DIRS})
 include_directories(SYSTEM)
 
