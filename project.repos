@@ -6,3 +6,4 @@ repositories:
   csm-metrics:
     type: git
     url: https://github.com/Cardinal-Space-Mining/csm-metrics
+    version: main
