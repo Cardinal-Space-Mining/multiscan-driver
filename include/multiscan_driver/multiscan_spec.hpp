@@ -40,15 +40,19 @@
 #pragma once
 
 #include <array>
-#include <cassert>
 #include <cmath>
 #include <vector>
+#include <cassert>
 #include <cstdint>
+#include <numbers>
 
 #include <Eigen/Core>
 
+
 namespace ms136
 {
+
+// --- Sensor Properties -------------------------------------------------------
 
 constexpr size_t SEGMENTS_PER_FRAME = 12U;
 constexpr size_t NUM_LR_LAYERS = 14U;
@@ -58,7 +62,7 @@ constexpr size_t POINTS_PER_SEGMENT_HD_LAYER = 240U;
 // echos get filterd when we apply different settings in the web dashboard
 constexpr size_t MAX_ECHOES_PER_POINT = 3U;
 
-// --- derived ---
+// --- derived -----
 constexpr size_t NUM_LAYERS = (NUM_LR_LAYERS + NUM_HD_LAYERS);
 constexpr size_t MAX_POINTS_PER_SEGMENT_ECHO =
     (NUM_LR_LAYERS * POINTS_PER_SEGMENT_LR_LAYER +
@@ -68,6 +72,10 @@ constexpr size_t MAX_POINTS_PER_SCAN =
 constexpr size_t POINTS_PER_LR_LAYER =
     (SEGMENTS_PER_FRAME * POINTS_PER_SEGMENT_LR_LAYER);
 constexpr size_t POINTS_PER_LR_SCAN = (POINTS_PER_LR_LAYER * NUM_LR_LAYERS);
+
+// azimuth step between consecutive points within a low-res layer (1 deg)
+constexpr float LR_LAYER_AZIMUTH_STEP_RAD =
+    std::numbers::pi_v<float> * 2 / POINTS_PER_LR_LAYER;
 
 
 inline constexpr bool isHdLayer(size_t raw_layer_idx)
@@ -79,7 +87,12 @@ inline constexpr bool isHdLayer(size_t raw_layer_idx)
 namespace redux
 {
 
-// --- dense mapping ---
+using DirectionLUT = std::array<Eigen::Vector3f, POINTS_PER_LR_SCAN>;
+using DenseBuffer = std::array<uint16_t, POINTS_PER_LR_SCAN>;
+using PackedBuffer = std::vector<uint16_t>;
+
+// --- Dense Layout Definitions ------------------------------------------------
+
 /* MAGIC NUMBERS TABLE!
 Layer,  DLayer, Elevation (rad),    PhaseL​ (rad),  PhaseL​ (deg)
 0,      0,      -0.390975,          2.961626,       169.69°
@@ -137,8 +150,6 @@ constexpr std::array<float, NUM_LR_LAYERS> AZIMUTH_OFFSET_LUT{
     5.873127,
     6.094876};
 
-/* Azimuth step between consecutive points within a low-res layer (1 deg) */
-constexpr float AZIMUTH_STEP_RAD = 0.0174533f;
 
 namespace detail
 {
@@ -149,7 +160,8 @@ inline constexpr int roundToInt(float x)
 
 inline constexpr std::array<int, NUM_LR_LAYERS> computePrevLayerAzShift()
 {
-    constexpr float PI = 3.14159265f;
+    constexpr float PI = std::numbers::pi_v<float>;
+
     std::array<int, NUM_LR_LAYERS> shift{};
     for (size_t l = 1; l < NUM_LR_LAYERS; l++)
     {
@@ -162,7 +174,7 @@ inline constexpr std::array<int, NUM_LR_LAYERS> computePrevLayerAzShift()
         {
             d += 2.f * PI;
         }
-        shift[l] = roundToInt(d / AZIMUTH_STEP_RAD);
+        shift[l] = roundToInt(d / LR_LAYER_AZIMUTH_STEP_RAD);
     }
     return shift;
 }
@@ -174,9 +186,9 @@ inline constexpr std::array<int, NUM_LR_LAYERS> computePrevLayerAzShift()
 constexpr std::array<int, NUM_LR_LAYERS> PREV_LAYER_AZ_SHIFT =
     detail::computePrevLayerAzShift();
 
-using DenseBuffer = std::array<uint16_t, POINTS_PER_LR_SCAN>;
-using PackedBuffer = std::vector<uint16_t>;
 
+
+// --- Reduction Model ---------------------------------------------------------
 
 /* Quantize a range value to 15 bits (mm-precision, rounded to nearest) and
  * append a reflector bit */
@@ -230,10 +242,8 @@ inline Eigen::Vector2f computeDirection(size_t dense_i)
     return Eigen::Vector2f{
         ELEVATION_LUT[layer_i],
         AZIMUTH_OFFSET_LUT[layer_i] +
-            static_cast<float>(line_i) * AZIMUTH_STEP_RAD};
+            static_cast<float>(line_i) * LR_LAYER_AZIMUTH_STEP_RAD};
 }
-
-using DirectionLUT = std::array<Eigen::Vector3f, POINTS_PER_LR_SCAN>;
 
 /* Unit direction vector for every dense idx, computed once on first use */
 inline const DirectionLUT& getDirectionLUT()
@@ -269,6 +279,10 @@ inline Eigen::Vector3f projectPoint(size_t dense_i, uint16_t dense_pt)
 {
     return projectPoint(dense_i, getRangeMeters(dense_pt));
 }
+
+
+
+// --- Buffering ---------------------------------------------------------------
 
 /* Insert raw point into buffer using calculators */
 inline constexpr bool addPointToBuffer(
