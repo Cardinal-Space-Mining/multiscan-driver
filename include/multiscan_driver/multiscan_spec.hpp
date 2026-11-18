@@ -40,6 +40,7 @@
 #pragma once
 
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <vector>
 #include <cstdint>
@@ -136,24 +137,62 @@ constexpr std::array<float, NUM_LR_LAYERS> AZIMUTH_OFFSET_LUT{
     5.873127,
     6.094876};
 
+/* Azimuth step between consecutive points within a low-res layer (1 deg) */
+constexpr float AZIMUTH_STEP_RAD = 0.0174533f;
+
+namespace detail
+{
+inline constexpr int roundToInt(float x)
+{
+    return static_cast<int>(x + (x >= 0.f ? 0.5f : -0.5f));
+}
+
+inline constexpr std::array<int, NUM_LR_LAYERS> computePrevLayerAzShift()
+{
+    constexpr float PI = 3.14159265f;
+    std::array<int, NUM_LR_LAYERS> shift{};
+    for (size_t l = 1; l < NUM_LR_LAYERS; l++)
+    {
+        float d = AZIMUTH_OFFSET_LUT[l] - AZIMUTH_OFFSET_LUT[l - 1];
+        while (d >= PI)
+        {
+            d -= 2.f * PI;
+        }
+        while (d < -PI)
+        {
+            d += 2.f * PI;
+        }
+        shift[l] = roundToInt(d / AZIMUTH_STEP_RAD);
+    }
+    return shift;
+}
+};  // namespace detail
+
+/* For dense layer l > 0, point (l, i) is azimuthally closest to point
+ * (l - 1, (i + PREV_LAYER_AZ_SHIFT[l]) mod POINTS_PER_LR_LAYER), since each
+ * layer starts at a different azimuth offset. */
+constexpr std::array<int, NUM_LR_LAYERS> PREV_LAYER_AZ_SHIFT =
+    detail::computePrevLayerAzShift();
+
 using DenseBuffer = std::array<uint16_t, POINTS_PER_LR_SCAN>;
 using PackedBuffer = std::vector<uint16_t>;
 
 
-/* Quantize a range value to 15 bits (mm-precision) and append a reflector bit */
+/* Quantize a range value to 15 bits (mm-precision, rounded to nearest) and
+ * append a reflector bit */
 inline constexpr uint16_t
     reducePoint(float range, uint8_t reflector, float min_range_mm = 200.f)
 {
     const float range_f_mm = range * 1000.f;
-    if (range_f_mm < min_range_mm ||
-        range_f_mm > static_cast<float>(RANGE_MASK))
+    if (!(range_f_mm >= min_range_mm) ||
+        range_f_mm >= static_cast<float>(RANGE_MASK) + 0.5f)
     {
         return 0;
     }
     else
     {
-        return (static_cast<uint16_t>(reflector) << 15) |
-               (static_cast<uint16_t>(range_f_mm) & RANGE_MASK);
+        return (static_cast<uint16_t>(reflector ? 1 : 0) << 15) |
+               (static_cast<uint16_t>(range_f_mm + 0.5f) & RANGE_MASK);
     }
 }
 
@@ -190,27 +229,40 @@ inline Eigen::Vector2f computeDirection(size_t dense_i)
     const size_t line_i = dense_i - (layer_i * POINTS_PER_LR_LAYER);
     return Eigen::Vector2f{
         ELEVATION_LUT[layer_i],
-        AZIMUTH_OFFSET_LUT[layer_i] + static_cast<float>(line_i) * 0.0174533f};
+        AZIMUTH_OFFSET_LUT[layer_i] +
+            static_cast<float>(line_i) * AZIMUTH_STEP_RAD};
+}
+
+using DirectionLUT = std::array<Eigen::Vector3f, POINTS_PER_LR_SCAN>;
+
+/* Unit direction vector for every dense idx, computed once on first use */
+inline const DirectionLUT& getDirectionLUT()
+{
+    static const DirectionLUT lut = []
+    {
+        DirectionLUT l;
+        for (size_t i = 0; i < POINTS_PER_LR_SCAN; i++)
+        {
+            const Eigen::Vector2f dir = computeDirection(i);
+            const float sin_phi = std::sin(dir.x());
+            const float cos_phi = std::cos(dir.x());
+            const float sin_theta = std::sin(dir.y());
+            const float cos_theta = std::cos(dir.y());
+            l[i] = Eigen::Vector3f{
+                cos_phi * cos_theta,
+                cos_phi * sin_theta,
+                sin_phi};
+        }
+        return l;
+    }();
+    return lut;
 }
 
 /* Project a dense point given it's range */
 inline Eigen::Vector3f projectPoint(size_t dense_i, float range)
 {
-    const Eigen::Vector2f dir = computeDirection(dense_i);
-
-#define PHI   dir.x()
-#define THETA dir.y()
-    const float sin_phi = std::sin(PHI);
-    const float cos_phi = std::cos(PHI);
-    const float sin_theta = std::sin(THETA);
-    const float cos_theta = std::cos(THETA);
-#undef PHI
-#undef THETA
-
-    return Eigen::Vector3f{
-        range * cos_phi * cos_theta,
-        range * cos_phi * sin_theta,
-        range * sin_phi};
+    assert(dense_i < POINTS_PER_LR_SCAN);
+    return getDirectionLUT()[dense_i] * range;
 }
 
 inline Eigen::Vector3f projectPoint(size_t dense_i, uint16_t dense_pt)
