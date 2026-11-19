@@ -30,6 +30,9 @@ bool sick_scansegment_xd::UdpReceiverSocketImpl::Init(const std::string& udp_sen
         {
             ForceStop();
         }
+        // ForceStop() latches m_force_quit; a re-Init()ed socket must be usable
+        // again, otherwise every Receive() returns 0 immediately after a reconnect.
+        m_force_quit = false;
 
         wsa_init();
         m_udp_sender = udp_sender;
@@ -62,6 +65,16 @@ bool sick_scansegment_xd::UdpReceiverSocketImpl::Init(const std::string& udp_sen
             m_udp_socket = INVALID_SOCKET;
             return false;
         }
+
+        // Without a receive timeout recv() blocks forever when the lidar stops
+        // sending, so the timeouts passed to Receive() could never fire.
+#if defined WIN32 || defined _MSC_VER
+        DWORD recv_timeout_ms = RECV_POLL_TIMEOUT_MS;
+        setsockopt(m_udp_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recv_timeout_ms, sizeof(recv_timeout_ms));
+#else
+        struct timeval recv_timeout{0, RECV_POLL_TIMEOUT_MS * 1000};
+        setsockopt(m_udp_socket, SOL_SOCKET, SO_RCVTIMEO, &recv_timeout, sizeof(recv_timeout));
+#endif
 
         // sockaddr_in bound_addr;
         // socklen_t len = sizeof(bound_addr);

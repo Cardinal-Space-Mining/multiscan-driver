@@ -170,7 +170,9 @@ bool SickScanCommonNw::connect(int timeoutSeconds)
 //
 bool SickScanCommonNw::isConnected()
 {
-  return (m_state == CONNECTED);
+  // The TCP read thread closes the socket when the lidar drops the connection,
+  // but nothing resets m_state, so check the socket as well.
+  return (m_state == CONNECTED) && m_tcp.isOpen();
 }
 
 

@@ -57,6 +57,8 @@
 #include "udp_receiver.h"
 #include "sick_ros_wrapper.h"
 #include <numbers>
+#include <algorithm>
+#include <cstdint>
 
 #define TARGET_IS_LITTLE_ENDIAN 1
 
@@ -348,6 +350,8 @@ sick_scansegment_xd::CompactModuleMetaData sick_scansegment_xd::CompactDataParse
         std::stringstream err_msg;
         err_msg << "## ERROR CompactDataParser::ParseModuleMetaData(): unexpected NumberOfLinesInModule=" << metadata.NumberOfLinesInModule;
         print_error(err_msg.str(), __LINE__);
+        // runs before the CRC check: a huge value overflows the size checks below
+        return metadata;
     }
     // NumberOfBeamsPerScan
     CHECK_MODULE_SIZE(metadata, byte_required, byte_cnt, sizeof(uint32_t), module_size, "NumberOfBeamsPerScan", __LINE__);
@@ -580,7 +584,7 @@ bool sick_scansegment_xd::CompactDataParser::ParseModuleMeasurementData(const ui
             float layer_azimuth_delta = lut_layer_azimuth_delta[layer_idx];
             uint64_t lidar_timestamp_microsec_start = lut_layer_lidar_timestamp_microsec_start[layer_idx];
             uint64_t lidar_timestamp_microsec_stop = lut_layer_lidar_timestamp_microsec_stop[layer_idx];
-            uint64_t lidar_timestamp_microsec = ((point_idx * (lidar_timestamp_microsec_stop - lidar_timestamp_microsec_start)) / (meta_data.NumberOfBeamsPerScan - 1)) + lidar_timestamp_microsec_start;
+            uint64_t lidar_timestamp_microsec = ((point_idx * (lidar_timestamp_microsec_stop - lidar_timestamp_microsec_start)) / std::max<uint32_t>(1, meta_data.NumberOfBeamsPerScan - 1)) + lidar_timestamp_microsec_start;
             float sin_elevation = lut_sin_elevation[layer_idx];
             float cos_elevation = lut_cos_elevation[layer_idx];
             int groupIdx = lut_groupIdx[layer_idx];
@@ -744,14 +748,14 @@ bool sick_scansegment_xd::CompactDataParser::ParseSegment(const uint8_t* payload
     bool success = true;
     while (module_size > 0)
     {
-        if (module_offset +  module_size > bytes_received)
+        if (static_cast<uint64_t>(module_offset) + module_size > bytes_received)  // 64 bit: module_size is untrusted (pre-CRC)
         {
             if (verbose > 0)
             {
                 ROS_INFO_STREAM("CompactDataParser::ParseSegment(): " << bytes_received << " bytes received (compact), at least " << (module_offset +  module_size) << " bytes required for module meta data");
             }
             payload_length_bytes = 0;
-            num_bytes_required  = module_offset +  module_size;
+            num_bytes_required  = static_cast<uint32_t>(std::min<uint64_t>(static_cast<uint64_t>(module_offset) + module_size, UINT32_MAX));
             return false;
         }
         uint32_t module_metadata_size = 0;

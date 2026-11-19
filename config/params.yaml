@@ -13,3 +13,4 @@
     sopas_read_timeout: 3.
     error_restart_timeout: 3.
     max_segment_buffers: 3
+    echo_selection: 1          # 1-based; 1 = first return

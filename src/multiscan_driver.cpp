@@ -38,6 +38,8 @@
 *******************************************************************************/
 
 #include <array>
+#include <chrono>
+#include <algorithm>
 #include <deque>
 #include <mutex>
 #include <atomic>
@@ -129,6 +131,8 @@ protected:
 private:
     // constant from sick_scansegment_xd
     static constexpr size_t RECV_BUFFER_N_BYTES = 64 * 1024;
+    // the scanner can take a few seconds to start streaming after (re)start
+    static constexpr double INITIAL_UDP_TIMEOUT_S = 5.;
 
     using SegmentQueue = std::deque<ScanSegmentParserOutput>;
     using SampleBuffer = std::array<SegmentQueue, ms136::SEGMENTS_PER_FRAME>;
@@ -144,12 +148,16 @@ private:
         int sopas_tcp_port = 2111;
         bool use_msgpack = false;
         bool use_cola_binary = true;
+        // restart the connection after this long without valid lidar data
         double udp_dropout_reset_thresh = 2.;
+        // max wait for one UDP segment
         double udp_receive_timeout = 1.;
         double sopas_read_timeout = 3.;
         double error_restart_timeout = 3.;
         int max_segment_buffering = 3;
-        int echo_selection = 3;
+        // 1-based echo to publish (1 = first return). Falls back to the first
+        // echo when the sensor sends fewer (it can be set to send just one).
+        int echo_selection = 1;
     } config;
 
     SharedPub<PointCloudMsg> scan_pub;
@@ -162,6 +170,7 @@ private:
     std::unique_ptr<SopasServices> sopas_service;
 
     std::vector<uint8_t> udp_buffer;
+    std::vector<uint8_t> chunk_buffer = std::vector<uint8_t>(RECV_BUFFER_N_BYTES);
     SampleBuffer samples;
     size_t sample_fill_mask = 0;
 
@@ -343,7 +352,11 @@ MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
         "max_segment_buffers",
         this->config.max_segment_buffering,
         3);
-    util::declare_param(this, "echo_selection", this->config.echo_selection, 3);
+    util::declare_param(this, "echo_selection", this->config.echo_selection, 1);
+    if (this->config.max_segment_buffering < 1)
+    {
+        this->config.max_segment_buffering = 1;
+    }
 
     this->scan_pub = this->create_publisher<PointCloudMsg>(
         "lidar_scan",
@@ -477,6 +490,8 @@ int MultiscanNode::recvSegmentData(
     static const std::vector<uint8_t> UDP_MSG_START_SEQ(
         {0x02, 0x02, 0x02, 0x02});
 
+    // keep the receive size fixed; a previous multi-datagram segment may have grown it
+    this->udp_buffer.resize(RECV_BUFFER_N_BYTES);
     size_t bytes_received = this->udp_recv_socket.Receive(
         this->udp_buffer,
         udp_recv_timeout_s,
@@ -536,6 +551,12 @@ int MultiscanNode::recvSegmentData(
                     1);
                 break;
             }
+            if (bytes_received >= n_bytes_req + sizeof(uint32_t))
+            {
+                // everything the parser asked for is here, so the segment is
+                // malformed rather than incomplete: re-parsing would just spin
+                break;
+            }
 
             while (this->is_running &&
                    (bytes_received < n_bytes_req + sizeof(uint32_t)) &&
@@ -544,13 +565,16 @@ int MultiscanNode::recvSegmentData(
                         recv_start_time,
                         chrono_system_clock::now()) < udp_recv_timeout_s))
             {
-                std::vector<uint8_t> chunk_buffer(RECV_BUFFER_N_BYTES, 0);
-                size_t chunk_bytes_received =
-                    this->udp_recv_socket.Receive(chunk_buffer);
-                this->udp_buffer.insert(
-                    this->udp_buffer.begin() + bytes_received,
-                    chunk_buffer.begin(),
-                    chunk_buffer.begin() + chunk_bytes_received);
+                const size_t chunk_bytes_received =
+                    this->udp_recv_socket.Receive(this->chunk_buffer);
+                if (this->udp_buffer.size() < bytes_received + chunk_bytes_received)
+                {
+                    this->udp_buffer.resize(bytes_received + chunk_bytes_received);
+                }
+                std::copy_n(
+                    this->chunk_buffer.begin(),
+                    chunk_bytes_received,
+                    this->udp_buffer.begin() + bytes_received);
                 bytes_received += chunk_bytes_received;
             }
         }
@@ -584,7 +608,7 @@ int MultiscanNode::recvSegmentData(
     {
         RCLCPP_ERROR(
             this->get_logger(),
-            "[MULTISCAN DRIVEr]: CRC payload check failed!");
+            "[MULTISCAN DRIVER]: CRC payload check failed!");
         return -3;
     }
 
@@ -657,6 +681,16 @@ void MultiscanNode::publishImu(const ScanSegmentParserOutput& seg)
 void MultiscanNode::addSegment(ScanSegmentParserOutput& seg)
 {
     const size_t idx = static_cast<size_t>(seg.segmentIndex);
+    if (idx >= ms136::SEGMENTS_PER_FRAME)
+    {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            1000,
+            "[MULTISCAN DRIVER]: Dropping segment with out-of-range index %zu.",
+            idx);
+        return;
+    }
     samples[idx].emplace_front();
     if (samples[idx].size() >
         static_cast<size_t>(this->config.max_segment_buffering))
@@ -701,16 +735,17 @@ void MultiscanNode::publishScan()
             {
                 continue;
             }
-            const int echo_i =
-                (static_cast<size_t>(this->config.echo_selection - 1) <
-                 layer.scanlines.size())
-                    ? this->config.echo_selection
+            const size_t echo_i =
+                (this->config.echo_selection >= 1 &&
+                 static_cast<size_t>(this->config.echo_selection) <=
+                     layer.scanlines.size())
+                    ? static_cast<size_t>(this->config.echo_selection - 1)
                     : 0;
             ScanLine& line = layer.scanlines[echo_i];
-            const size_t points_per_seg =
-                (line.points.size() <= ms136::POINTS_PER_SEGMENT_LR_LAYER)
-                    ? ms136::POINTS_PER_SEGMENT_LR_LAYER
-                    : ms136::POINTS_PER_SEGMENT_HD_LAYER;
+            // every segment carries the same number of points for a layer
+            // (30 low-res, 240 high-res), so this maps the segment-relative
+            // index onto the whole layer
+            const size_t points_per_seg = line.points.size();
 
             for (LidarPoint& point : line.points)
             {
@@ -795,8 +830,7 @@ void MultiscanNode::runReceiver()
             this->udp_buffer.clear();
             this->udp_buffer.resize(RECV_BUFFER_N_BYTES, 0);
 
-            int n_recv_bytes = 0;
-            double udp_recv_timeout = 5.;
+            bool received_data = false;
             chrono_system_time recv_start_time;
             chrono_system_time last_udp_recv_time = chrono_system_clock::now();
 
@@ -806,13 +840,33 @@ void MultiscanNode::runReceiver()
                 PROFILING_FLUSH();
 
                 PROFILING_NOTIFY(receive_bytes);
-                if ((n_recv_bytes = this->recvSegmentData(
-                         udp_recv_timeout,
-                         recv_start_time)) < 0)
+                if (this->recvSegmentData(
+                        this->config.udp_receive_timeout,
+                        recv_start_time) < 0)
                 {
                     PROFILING_NOTIFY(receive_bytes);
+                    // The TCP link can look healthy after the lidar reboots or
+                    // loses power, so lack of UDP data is what triggers a reset.
+                    const double reset_after_s =
+                        received_data ? this->config.udp_dropout_reset_thresh
+                                      : std::max(
+                                            this->config.udp_dropout_reset_thresh,
+                                            INITIAL_UDP_TIMEOUT_S);
+                    const double silent_s = ssgmt_xd::Seconds(
+                        last_udp_recv_time,
+                        chrono_system_clock::now());
+                    if (silent_s > reset_after_s)
+                    {
+                        RCLCPP_ERROR(
+                            this->get_logger(),
+                            "[MULTISCAN DRIVER]: No valid lidar data for %.1f seconds.",
+                            silent_s);
+                        break;
+                    }
                     continue;
                 }
+                received_data = true;
+                last_udp_recv_time = chrono_system_clock::now();
 
                 PROFILING_NOTIFY2(receive_bytes, parse_segment);
 
@@ -843,23 +897,6 @@ void MultiscanNode::runReceiver()
                     PROFILING_NOTIFY(export_cloud);
                     this->publishScan();
                     PROFILING_NOTIFY(export_cloud);
-                }
-
-                if (n_recv_bytes > 0)
-                {
-                    last_udp_recv_time = chrono_system_clock::now();
-                }
-                if (ssgmt_xd::Seconds(
-                        last_udp_recv_time,
-                        chrono_system_clock::now()) >
-                    this->config.udp_dropout_reset_thresh)
-                {
-                    udp_recv_timeout = -1;
-                }
-                else
-                {
-                    // receive non-blocking with timeout
-                    udp_recv_timeout = this->config.udp_receive_timeout;
                 }
             }
         }
@@ -892,13 +929,18 @@ void MultiscanNode::runReceiver()
             {
                 RCLCPP_ERROR(
                     this->get_logger(),
-                    "[MULTISCAN DRIVER]: Encountered decode error. "
-                    "Restarting connections after timeout...");
+                    "[MULTISCAN DRIVER]: Restarting connections after timeout...");
             }
-            std::this_thread::sleep_for(
+            // sleep in short steps so shutdown() isn't held up
+            const auto restart_time =
+                std::chrono::steady_clock::now() +
                 std::chrono::milliseconds(
-                    static_cast<size_t>(
-                        this->config.error_restart_timeout * 1e3)));
+                    static_cast<int64_t>(this->config.error_restart_timeout * 1e3));
+            while (this->is_running &&
+                   std::chrono::steady_clock::now() < restart_time)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
         }
     }
 }

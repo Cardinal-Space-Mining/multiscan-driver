@@ -86,6 +86,7 @@ typedef struct sockaddr SOCKADDR;
 static inline std::string getErrorMessage(void) { return std::to_string(errno) + " (" + std::string(strerror(errno)) + ")"; }
 #endif
 
+#include <atomic>
 #include "common.h"
 #include "tcp/wsa_init.hpp"
 
@@ -146,7 +147,8 @@ namespace sick_scansegment_xd
         std::string m_udp_sender; // IP of udp sender
         int m_udp_port;           // udp port
         SOCKET m_udp_socket;      // udp raw socket
-        bool m_force_quit;        // allows Receive() to unblock in case external code needs to stop running threads
+        std::atomic<bool> m_force_quit; // allows Receive() to unblock in case external code needs to stop running threads
+        static constexpr int RECV_POLL_TIMEOUT_MS = 100; // max time a single recv() blocks
 
     };
 
