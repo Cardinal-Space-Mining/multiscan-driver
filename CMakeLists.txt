@@ -10,6 +10,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(csm_metrics REQUIRED)
+find_package(ZLIB REQUIRED)
 
 standard_compile_options()
 
@@ -39,10 +40,20 @@ add_library(scansegment_xd STATIC
   "src/sick_scan_xd/tcp/toolbox.cpp"
   "src/sick_scan_xd/tcp/wsa_init.cpp")
 
+# --- Core (ROS-free decoding) ----------------------------------------------------
+add_library(multiscan_core STATIC
+  "src/compact/decoder.cpp"
+  "src/compact/point_layout.cpp")
+target_include_directories(multiscan_core PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src" )
+target_link_libraries(multiscan_core PUBLIC
+    ZLIB::ZLIB )
+
 # --- Executables --------------------------------------------------------------
 add_executable(multiscan_driver
     "src/multiscan_driver.cpp" )
 target_link_libraries(multiscan_driver
+    multiscan_core
     scansegment_xd
     csm_metrics::stats
     csm_metrics::profiling
@@ -60,7 +71,6 @@ auto_target_dependencies(multiscan_driver
 # --- Tests --------------------------------------------------------------------
 if(BUILD_TESTING)
     find_package(ament_cmake_gtest REQUIRED)
-    find_package(ZLIB REQUIRED)
 
     # Copy of the current data path on the vendored parser, used as the
     # reference the rewrite is checked against (see test/oracle/).
@@ -71,6 +81,7 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/include" )
     target_link_libraries(multiscan_test_oracle PUBLIC
+        multiscan_core
         scansegment_xd
         ZLIB::ZLIB
         Eigen3::Eigen )
@@ -84,6 +95,13 @@ if(BUILD_TESTING)
     target_link_libraries(test_legacy_oracle
         multiscan_test_oracle
         ${sensor_msgs_TARGETS} )
+
+    ament_add_gtest(test_decoder "test/test_decoder.cpp")
+    target_link_libraries(test_decoder multiscan_test_oracle)
+
+    # not a test: oracle vs new decoder timing on the captures
+    add_executable(bench_decoder "test/bench_decoder.cpp")
+    target_link_libraries(bench_decoder multiscan_test_oracle)
 endif()
 
 # --- Export -------------------------------------------------------------------

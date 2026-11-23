@@ -3,14 +3,18 @@
 
     lidar_frame: "lidar_link"
     lidar_hostname: ""
-    driver_hostname: ""
+    driver_hostname: ""         # this host's IP on the lidar network (required for now)
     lidar_udp_port: 2115
-    sopas_tcp_port: 2111
-    use_msgpack: false
-    use_cola_binary: true
+    sopas_tcp_port: 2111        # 2111 = CoLa A, 2112 = CoLa B (firmware 2.3)
+    use_cola_binary: false      # must match the port above
     udp_reset_timeout: 2.
-    udp_receive_timeout: 1.
     sopas_read_timeout: 3.
     error_restart_timeout: 3.
-    max_segment_buffers: 3
-    echo_selection: 1          # 1-based; 1 = first return
+    # 1-based echo to publish; falls back to the first echo the sensor sends.
+    # With the sensor's echo filter on "first" or "last" only one echo is sent.
+    echo_selection: 1
+
+    output:
+      # any subset containing x, y, z; fields are always packed in this order
+      point_fields: ["x", "y", "z", "intensity", "range", "azimuth", "elevation",
+                     "layer", "echo", "index", "tl", "th", "reflective"]
