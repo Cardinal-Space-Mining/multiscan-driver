@@ -2,18 +2,18 @@
   ros__parameters:
 
     lidar_frame: "lidar_link"
-    lidar_hostname: ""
-    driver_hostname: ""         # this host's IP on the lidar network (required for now)
+    lidar_hostname: ""          # sensor IP (required)
+    driver_hostname: ""         # IP the sensor streams to; "" = this host's address towards the sensor
     lidar_udp_port: 2115
     imu_udp_port: 2116          # IMU on its own socket; may equal lidar_udp_port
     udp_receive_buffer_bytes: 4194304   # capped by net.core.rmem_max
-    sopas_tcp_port: 2111        # 2111 = CoLa A, 2112 = CoLa B (firmware 2.3)
-    use_cola_binary: false      # must match the port above
-    udp_reset_timeout: 2.
-    sopas_read_timeout: 3.
-    error_restart_timeout: 3.
+    sopas_tcp_port: 2111        # CoLa A (firmware 2.3: 2111 = CoLa A only, 2112 = CoLa B)
+    sopas_password: "F4724744"  # hash of the Authorized Client password (factory default)
+    udp_reset_timeout: 2.       # s without data before reconnecting
+    sopas_read_timeout: 3.      # s per SOPAS request
+    error_restart_timeout: 3.   # s between reconnect attempts
     # 1-based echo to publish; falls back to the first echo the sensor sends.
-    # With the sensor's echo filter on "first" or "last" only one echo is sent.
+    # With sensor.echo_filter "first" or "last" only one echo is sent.
     echo_selection: 1
 
     output:
@@ -23,3 +23,39 @@
       # publish frames that end with segments missing (lost datagrams); the
       # segments a narrowed output range omits are learned and not counted
       publish_partial_frames: true
+
+    # Applied on every connect and read back to verify; never saved on the
+    # sensor (a power cycle restores its stored configuration). With apply
+    # false the driver only compares and warns. Invalid values disable apply.
+    # Defaults are the team sensor's current configuration.
+    sensor:
+      apply: true
+      echo_filter: "last"       # first | last | all
+      # layers 1..16 (0/1); 6 and 14 are the 0.125 deg high-resolution layers
+      layers: [1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1]
+      output_range_deg: [-180.0, 180.0]   # floats; segments fully outside aren't sent
+      interlaced: false         # 0.125 deg on all layers over 8 frames (not codec-compatible)
+      range_filter:             # zero points outside [min, max]
+        enabled: false
+        min_mm: 0
+        max_mm: 200000
+      cubic_filter:             # zero points outside the box (mm, x y z)
+        enabled: false
+        min_mm: [-20000, -20000, -20000]
+        max_mm: [20000, 20000, 20000]
+      particle_filter: false    # dust/rain/snow; adds one scan of latency
+      fog_filter: false
+      moving_average:
+        enabled: false
+        depth: 2                # scans averaged; adds depth x 50 ms latency
+      interval_filter:
+        enabled: false
+        factor: 4               # publish every n-th scan, 2..50
+      contamination:            # optics cover monitoring
+        strategy: "inactive"    # inactive | high_availability | sensitive
+        response_time_s: 3      # 3..60
+        sensitivity: "low"      # high | medium | low
+        custom_sectors: true
+        sectors: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]   # 30 deg sectors (0/1)
+        warning: true
+        error: true

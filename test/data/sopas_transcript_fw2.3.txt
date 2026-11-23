@@ -1,0 +1,258 @@
+# CoLa A transcript from the multiScan136 (serial 23170008, firmware 2.3.0), 2026-11-22.
+# Each setting: read original, write a test value, read back, write original, read back.
+# Recorded with sMN SetAccessMode 3 F4724744 (Authorized Client). Nothing was persisted.
+# Lines: '> ' request, '< ' reply.
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN FREchoFilter
+< sRA FREchoFilter 2
+> sWN FREchoFilter 0
+< sWA FREchoFilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN FREchoFilter
+< sRA FREchoFilter 0
+> sWN FREchoFilter 2
+< sWA FREchoFilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN FREchoFilter
+< sRA FREchoFilter 2
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPlayerFilter
+< sRA LFPlayerFilter 1 1 1 1 1 1 0 1 1 1 1 1 1 1 0 1 1
+> sWN LFPlayerFilter 1 1 1 0 1 1 1 0 1 1 1 1 1 1 1 1 0
+< sWA LFPlayerFilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPlayerFilter
+< sRA LFPlayerFilter 1 1 1 0 1 1 1 0 1 1 1 1 1 1 1 1 0
+> sWN LFPlayerFilter 1 1 1 1 1 1 0 1 1 1 1 1 1 1 0 1 1
+< sWA LFPlayerFilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPlayerFilter
+< sRA LFPlayerFilter 1 1 1 1 1 1 0 1 1 1 1 1 1 1 0 1 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LMPoutputRange
+< sRA LMPoutputRange 1 4E2 FFE488C0 1B7740
+> sWN LMPoutputRange 1 +1250 -900000 +450000
+< sWA LMPoutputRange
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LMPoutputRange
+< sRA LMPoutputRange 1 4E2 FFF24460 6DDD0
+> sWN LMPoutputRange 1 4E2 FFE488C0 1B7740
+< sWA LMPoutputRange
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LMPoutputRange
+< sRA LMPoutputRange 1 4E2 FFE488C0 1B7740
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPradialDistanceRangeFilter
+< sRA LFPradialDistanceRangeFilter 0 3FC 9F70
+> sWN LFPradialDistanceRangeFilter 1 +500 +30000
+< sWA LFPradialDistanceRangeFilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPradialDistanceRangeFilter
+< sRA LFPradialDistanceRangeFilter 1 1F4 7530
+> sWN LFPradialDistanceRangeFilter 0 3FC 9F70
+< sWA LFPradialDistanceRangeFilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPradialDistanceRangeFilter
+< sRA LFPradialDistanceRangeFilter 0 3FC 9F70
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPcubicareafilter
+< sRA LFPcubicareafilter 0 FFFFB1E0 4E20 FFFFB1E0 4E20 FFFFB1E0 4E20
+> sWN LFPcubicareafilter 1 -50000 +60000 -70000 +80000 -10000 +20000
+< sWA LFPcubicareafilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPcubicareafilter
+< sRA LFPcubicareafilter 1 FFFF3CB0 EA60 FFFEEE90 13880 FFFFD8F0 4E20
+> sWN LFPcubicareafilter 0 FFFFB1E0 4E20 FFFFB1E0 4E20 FFFFB1E0 4E20
+< sWA LFPcubicareafilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPcubicareafilter
+< sRA LFPcubicareafilter 0 FFFFB1E0 4E20 FFFFB1E0 4E20 FFFFB1E0 4E20
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPparticle
+< sRA LFPparticle 0 1F4
+> sWN LFPparticle 1 +500
+< sWA LFPparticle
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPparticle
+< sRA LFPparticle 1 1F4
+> sWN LFPparticle 0 1F4
+< sWA LFPparticle
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPparticle
+< sRA LFPparticle 0 1F4
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN MCSenseLevel
+< sRA MCSenseLevel 0
+> sWN MCSenseLevel 1
+< sWA MCSenseLevel
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN MCSenseLevel
+< sRA MCSenseLevel 1
+> sWN MCSenseLevel 0
+< sWA MCSenseLevel
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN MCSenseLevel
+< sRA MCSenseLevel 0
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPmovingAveragingFilter
+< sRA LFPmovingAveragingFilter 0 2
+> sWN LFPmovingAveragingFilter 1 +3
+< sWA LFPmovingAveragingFilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPmovingAveragingFilter
+< sRA LFPmovingAveragingFilter 1 3
+> sWN LFPmovingAveragingFilter 0 2
+< sWA LFPmovingAveragingFilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPmovingAveragingFilter
+< sRA LFPmovingAveragingFilter 0 2
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPintervalFilter
+< sRA LFPintervalFilter 0 4
+> sWN LFPintervalFilter 1 +2
+< sWA LFPintervalFilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPintervalFilter
+< sRA LFPintervalFilter 1 2
+> sWN LFPintervalFilter 0 4
+< sWA LFPintervalFilter
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LFPintervalFilter
+< sRA LFPintervalFilter 0 4
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN ContaminationConfig
+< sRA ContaminationConfig 0 3 2 FF 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+> sWN ContaminationConfig 1 +10 1 0 1 1 1 1 0 0 1 1 1 1 1 1 1 0
+< sWA ContaminationConfig
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN ContaminationConfig
+< sRA ContaminationConfig 1 A 1 0 1 1 1 1 0 0 1 1 1 1 1 1 1 0
+> sWN ContaminationConfig 0 3 2 FF 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+< sWA ContaminationConfig
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN ContaminationConfig
+< sRA ContaminationConfig 0 3 2 FF 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LMPscancfg
+< sRA LMPscancfg 7D0 1 4E2 FFE488C0 1B7740
+> sMN mCLsetscancfglist 1
+< sAN mCLsetscancfglist 0
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LMPscancfg
+< sRA LMPscancfg 7D0 1 4E2 FFE488C0 1B7740
+> sMN mCLsetscancfglist 0
+< sAN mCLsetscancfglist 0
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN LMPscancfg
+< sRA LMPscancfg 7D0 1 4E2 FFE488C0 1B7740
+> sRN DeviceIdent
+< sRA DeviceIdent 9 multiScan 8 2.3.0.0R
+> sRN SerialNumber
+< sRA SerialNumber 8 23170008
+> sRN FirmwareVersion
+< sRA FirmwareVersion 5 2.3.0
+> sRN DevSta
+< sRA DevSta 2
+> sRN OPcurtmpdev
+< sRA OPcurtmpdev 42414C29
+> sRN ContaminationResult
+< sRA ContaminationResult 0 0
+> sRN TSCRole
+< sRA TSCRole 0
+> sRN ScanDataFormat
+< sRA ScanDataFormat 2
+> sRN ScanDataPreformatting
+< sRA ScanDataPreformatting 1
+> sRN ScanDataEthSettings
+< sRA ScanDataEthSettings 1 A B A 1 843
+> sRN ImuDataEthSettings
+< sRA ImuDataEthSettings 1 A B A 1 844
+> sRN ScanDataEnable
+< sRA ScanDataEnable 0
+> sRN ImuDataEnable
+< sRA ImuDataEnable 0
+> sRN LMPautostartmeas
+< sRA LMPautostartmeas 1
+> sRN NoSuchVariable
+< sFA 3
+> sMN Run
+< sAN Run 1
+> sWN FREchoFilter 2
+< sFA A

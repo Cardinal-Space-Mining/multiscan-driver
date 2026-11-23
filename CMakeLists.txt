@@ -17,27 +17,15 @@ standard_compile_options()
 include_directories(${EIGEN3_INCLUDE_DIRS})
 include_directories(SYSTEM)
 
-# --- Scansegmentxd ------------------------------------------------------------
+# --- Vendored sick_scan_xd remnants -----------------------------------------------
+# The compact parser is only the reference the tests compare against (test/oracle);
+# the software PLL still converts sensor timestamps until the time sync rewrite.
 add_library(scansegment_xd STATIC
-  "src/sick_scan_xd/msgpack11/msgpack11.cpp"
   "src/sick_scan_xd/compact_parser.cpp"
-  "src/sick_scan_xd/msgpack_parser.cpp"
   "src/sick_scan_xd/scansegment_parser_output.cpp"
-  "src/sick_scan_xd/sick_scan_common_nw.cpp"
-  "src/sick_scan_xd/sick_scan_common_tcp.cpp"
-  "src/sick_scan_xd/sopas_services.cpp"
   "src/sick_scan_xd/softwarePLL.cpp"
   "src/sick_scan_xd/udp_receiver.cpp"
   "src/sick_scan_xd/udp_sockets.cpp"
-  "src/sick_scan_xd/tcp/colaa.cpp"
-  "src/sick_scan_xd/tcp/colab.cpp"
-  "src/sick_scan_xd/tcp/errorhandler.cpp"
-  "src/sick_scan_xd/tcp/Mutex.cpp"
-  "src/sick_scan_xd/tcp/SickThread.cpp"
-  "src/sick_scan_xd/tcp/SopasBase.cpp"
-  "src/sick_scan_xd/tcp/tcp.cpp"
-  "src/sick_scan_xd/tcp/Time.cpp"
-  "src/sick_scan_xd/tcp/toolbox.cpp"
   "src/sick_scan_xd/tcp/wsa_init.cpp")
 
 # --- Core (ROS-free decoding) ----------------------------------------------------
@@ -45,7 +33,10 @@ add_library(multiscan_core STATIC
   "src/compact/decoder.cpp"
   "src/compact/point_layout.cpp"
   "src/frame_assembler.cpp"
-  "src/net/udp_receiver.cpp")
+  "src/net/udp_receiver.cpp"
+  "src/sopas/cola_client.cpp"
+  "src/sopas/sensor_session.cpp"
+  "src/sopas/sensor_settings.cpp")
 target_include_directories(multiscan_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src" )
 target_link_libraries(multiscan_core PUBLIC
@@ -106,6 +97,9 @@ if(BUILD_TESTING)
 
     ament_add_gtest(test_udp_receiver "test/test_udp_receiver.cpp")
     target_link_libraries(test_udp_receiver multiscan_core)
+
+    ament_add_gtest(test_sopas "test/test_sopas.cpp")
+    target_link_libraries(test_sopas multiscan_test_oracle)
 
     # not a test: oracle vs new decoder timing on the captures
     add_executable(bench_decoder "test/bench_decoder.cpp")

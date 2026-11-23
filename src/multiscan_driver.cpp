@@ -66,9 +66,11 @@
 #include "frame_assembler.hpp"
 #include "net/udp_receiver.hpp"
 
+#include "sopas/cola_client.hpp"
+#include "sopas/sensor_session.hpp"
+#include "sopas/sensor_settings.hpp"
+
 #include "sick_scan_xd/softwarePLL.h"
-#include "sick_scan_xd/sick_scan_common_tcp.h"
-#include "sick_scan_xd/sopas_services.h"
 
 
 #define STATS_PUB_FREQUNCY      10U
@@ -80,9 +82,9 @@
 
 
 using namespace util::ros_aliases;
-using namespace sick_scan_xd;
 
 namespace compact = multiscan::compact;
+namespace sopas = multiscan::sopas;
 
 
 class MultiscanNode : public rclcpp::Node
@@ -99,7 +101,9 @@ public:
     void shutdown();
 
 protected:
+    void declareSensorSettings();
     bool initConnection();
+    void stopStreaming();
     void handleDatagram(std::span<const uint8_t> datagram, uint64_t recv_ns);
     void handleImu(std::span<const uint8_t> datagram, uint64_t recv_ns);
     void publishFrame(multiscan::FrameAssembler::Frame& frame);
@@ -124,9 +128,8 @@ private:
         int lidar_udp_port = 2115;
         int imu_udp_port = 2116;
         int udp_receive_buffer_bytes = 4 << 20;
-        int sopas_tcp_port = 2111;
-        bool use_cola_binary =
-            false;  // port 2111 only speaks CoLa A (firmware 2.3)
+        int sopas_tcp_port = 2111;  // CoLa A (firmware 2.3: 2111 = CoLa A only)
+        std::string sopas_password = "F4724744";  // Authorized Client hash
         // restart the connection after this long without valid lidar data
         double udp_dropout_reset_thresh = 2.;
         double sopas_read_timeout = 3.;
@@ -136,6 +139,9 @@ private:
         int echo_selection = 1;
         std::vector<std::string> point_fields;
         bool publish_partial_frames = true;
+        // applied on every connect (never persisted) unless apply is false
+        bool apply_sensor_settings = true;
+        sopas::SensorSettings sensor;
     } config;
 
     SharedPub<PointCloudMsg> scan_pub;
@@ -148,8 +154,7 @@ private:
     multiscan::FrameAssembler::Stats reported_stats;
 
     multiscan::UdpReceiver receiver;
-    std::unique_ptr<SickScanCommonTcp> sopas_tcp;
-    std::unique_ptr<SopasServices> sopas_service;
+    sopas::ColaClient cola;
 
     std::thread recv_thread;
     std::atomic<bool> is_running = true;
@@ -199,9 +204,18 @@ MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
         2111);
     util::declare_param(
         this,
-        "use_cola_binary",
-        this->config.use_cola_binary,
-        false);
+        "sopas_password",
+        this->config.sopas_password,
+        "F4724744");
+    bool use_cola_binary = false;
+    util::declare_param(this, "use_cola_binary", use_cola_binary, false);
+    if (use_cola_binary)
+    {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "[MULTISCAN DRIVER]: CoLa B is no longer supported; using CoLa A on "
+            "sopas_tcp_port (2111 on firmware 2.3).");
+    }
     util::declare_param(
         this,
         "udp_reset_timeout",
@@ -251,6 +265,8 @@ MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
             "[MULTISCAN DRIVER]: MSGPACK is no longer supported (it never worked in this "
             "driver); using the Compact format.");
     }
+
+    this->declareSensorSettings();
 
     std::string layout_error;
     auto layout = multiscan::PointLayout::fromNames(
@@ -333,64 +349,259 @@ void MultiscanNode::shutdown()
 }
 
 
+void MultiscanNode::declareSensorSettings()
+{
+    sopas::SensorSettings& s = this->config.sensor;
+    std::vector<std::string> errors;
+
+    auto flag = [this](const std::string& name, bool def)
+    {
+        bool v = def;
+        util::declare_param(this, name, v, def);
+        return v;
+    };
+    auto integer = [this](const std::string& name, int64_t def)
+    {
+        int64_t v = def;
+        util::declare_param(this, name, v, def);
+        return v;
+    };
+    auto text = [this](const std::string& name, const std::string& def)
+    {
+        std::string v = def;
+        util::declare_param(this, name, v, def);
+        return v;
+    };
+    auto integers =
+        [this, &errors](const std::string& name, std::vector<int64_t> def)
+    {
+        const size_t n = def.size();
+        std::vector<int64_t> v = def;
+        util::declare_param(this, name, v, def);
+        if (v.size() != n)
+        {
+            errors.push_back(name + " needs " + std::to_string(n) + " values");
+            v = def;
+        }
+        return v;
+    };
+    auto toBools = [](const std::vector<int64_t>& v, auto& out)
+    {
+        for (size_t i = 0; i < out.size(); i++)
+        {
+            out[i] = v[i] != 0;
+        }
+    };
+
+    util::declare_param(
+        this,
+        "sensor.apply",
+        this->config.apply_sensor_settings,
+        true);
+
+    const std::string echo = text("sensor.echo_filter", "last");
+    if (auto e = sopas::echoFilterFromString(echo))
+    {
+        s.echo_filter = *e;
+    }
+    else
+    {
+        errors.push_back(
+            "sensor.echo_filter must be first, last or all (got '" + echo +
+            "')");
+    }
+
+    toBools(
+        integers(
+            "sensor.layers",
+            {1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1}),
+        s.layers);
+    {
+        std::vector<double> range{-180., 180.};
+        util::declare_param(
+            this,
+            "sensor.output_range_deg",
+            range,
+            std::vector<double>{-180., 180.});
+        if (range.size() == 2)
+        {
+            s.output_range_start_deg = range[0];
+            s.output_range_stop_deg = range[1];
+        }
+        else
+        {
+            errors.push_back("sensor.output_range_deg needs [start, stop]");
+        }
+    }
+    s.interlaced = flag("sensor.interlaced", false);
+
+    s.range_filter.enabled = flag("sensor.range_filter.enabled", false);
+    s.range_filter.min_mm = integer("sensor.range_filter.min_mm", 0);
+    s.range_filter.max_mm = integer("sensor.range_filter.max_mm", 200000);
+
+    s.cubic_filter.enabled = flag("sensor.cubic_filter.enabled", false);
+    {
+        const auto lo =
+            integers("sensor.cubic_filter.min_mm", {-20000, -20000, -20000});
+        const auto hi =
+            integers("sensor.cubic_filter.max_mm", {20000, 20000, 20000});
+        std::copy(lo.begin(), lo.end(), s.cubic_filter.min_mm.begin());
+        std::copy(hi.begin(), hi.end(), s.cubic_filter.max_mm.begin());
+    }
+
+    s.particle_filter = flag("sensor.particle_filter", false);
+    s.fog_filter = flag("sensor.fog_filter", false);
+    s.moving_average.enabled = flag("sensor.moving_average.enabled", false);
+    s.moving_average.depth = integer("sensor.moving_average.depth", 2);
+    s.interval_filter.enabled = flag("sensor.interval_filter.enabled", false);
+    s.interval_filter.factor = integer("sensor.interval_filter.factor", 4);
+
+    auto& c = s.contamination;
+    const std::string strategy =
+        text("sensor.contamination.strategy", "inactive");
+    if (auto v = sopas::contaminationStrategyFromString(strategy))
+    {
+        c.strategy = *v;
+    }
+    else
+    {
+        errors.push_back(
+            "sensor.contamination.strategy must be inactive, high_availability or sensitive");
+    }
+    c.response_time_s = integer("sensor.contamination.response_time_s", 3);
+    const std::string sensitivity =
+        text("sensor.contamination.sensitivity", "low");
+    if (auto v = sopas::contaminationSensitivityFromString(sensitivity))
+    {
+        c.sensitivity = *v;
+    }
+    else
+    {
+        errors.push_back(
+            "sensor.contamination.sensitivity must be high, medium or low");
+    }
+    c.custom_sectors = flag("sensor.contamination.custom_sectors", true);
+    toBools(
+        integers("sensor.contamination.sectors", std::vector<int64_t>(12, 1)),
+        c.sectors);
+    c.warning = flag("sensor.contamination.warning", true);
+    c.error = flag("sensor.contamination.error", true);
+
+    if (const std::string v = s.validate(); !v.empty())
+    {
+        errors.push_back(v);
+    }
+    if (!errors.empty())
+    {
+        std::string all;
+        for (const auto& e : errors)
+        {
+            all += "\n\t" + e;
+        }
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "[MULTISCAN DRIVER]: Invalid sensor settings; they will NOT be applied, "
+            "only compared with the sensor:%s",
+            all.c_str());
+        this->config.apply_sensor_settings = false;
+    }
+}
+
 bool MultiscanNode::initConnection()
 {
-    this->sopas_tcp = std::make_unique<SickScanCommonTcp>(
-        this->config.lidar_hostname,
-        this->config.sopas_tcp_port,
-        this->config.use_cola_binary ? 'B' : 'A');
-    this->sopas_service = std::make_unique<SopasServices>(
-        this->sopas_tcp.get(),
-        this->config.use_cola_binary);
-    this->sopas_tcp->init_device(3);
-    this->sopas_tcp->setReadTimeOutInMs(
-        static_cast<size_t>(this->config.sopas_read_timeout * 1e3));
-
-    if (!this->sopas_tcp->isConnected())
+    const int timeout_ms =
+        static_cast<int>(this->config.sopas_read_timeout * 1e3);
+    std::string err;
+    if (!this->cola.connect(
+            this->config.lidar_hostname,
+            static_cast<uint16_t>(this->config.sopas_tcp_port),
+            timeout_ms,
+            err))
     {
         RCLCPP_ERROR(
             this->get_logger(),
-            "[MULTISCAN DRIVER]: Failed to setup TCP SOPAS connection to "
-            "initialize device using parameters:\n"
-            "\tDevice Hostname: %s\n"
-            "\tSOPAS TCP Port: %d\n"
-            "\tCoLa Mode: %s\n",
-            this->config.lidar_hostname.c_str(),
-            this->config.sopas_tcp_port,
-            this->config.use_cola_binary ? "Binary" : "Ascii");
+            "[MULTISCAN DRIVER]: SOPAS connection failed: %s",
+            err.c_str());
         return false;
     }
 
-    RCLCPP_DEBUG(
+    const std::string host = this->config.driver_hostname.empty()
+                                 ? this->cola.localAddress()
+                                 : this->config.driver_hostname;
+    sopas::SensorSession session(
+        this->cola,
+        this->config.sopas_password,
+        timeout_ms);
+    sopas::StartReport report;
+    const bool ok = session.start(
+        {host,
+         static_cast<uint16_t>(this->config.lidar_udp_port),
+         static_cast<uint16_t>(this->config.imu_udp_port),
+         true},
+        this->config.sensor,
+        this->config.apply_sensor_settings,
+        report);
+
+    RCLCPP_INFO(
         this->get_logger(),
-        "[MULTISCAN DRIVER]: TCP connected! Sending startup commands...");
-
-    if (!this->sopas_service->sendAuthorization())
+        "[MULTISCAN DRIVER]: Connected to %s (serial %s, firmware %s); stream to %s:%d (scan) / %d (IMU).",
+        report.device.type.c_str(),
+        report.device.serial.c_str(),
+        report.device.firmware.c_str(),
+        host.c_str(),
+        this->config.lidar_udp_port,
+        this->config.imu_udp_port);
+    size_t verified = 0;
+    for (const auto& st : report.settings)
+    {
+        verified += st.verified;
+        if (!st.problem.empty())
+        {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: Sensor setting %s: %s",
+                st.name.c_str(),
+                st.problem.c_str());
+        }
+    }
+    if (!ok)
     {
         RCLCPP_ERROR(
             this->get_logger(),
-            "[MULTISCAN DRIVER]: SOPAS authorization command failed.");
+            "[MULTISCAN DRIVER]: Sensor start failed: %s",
+            report.error.c_str());
         return false;
     }
-
-    if (!this->sopas_service->sendMultiScanStartCmd(
-            this->config.driver_hostname,
-            this->config.lidar_udp_port,
-            2,     // compact
-            true,  // enable imu data
-            this->config.imu_udp_port))
-    {
-        RCLCPP_ERROR(
-            this->get_logger(),
-            "[MULTISCAN DRIVER]: SOPAS startup sequence failed.");
-        return false;
-    }
-
-    RCLCPP_DEBUG(
+    RCLCPP_INFO(
         this->get_logger(),
-        "[MULTISCAN DRIVER]: Successfully sent all startup commands.");
-
+        "[MULTISCAN DRIVER]: %s; %zu of %zu sensor settings verified, %zu problems.",
+        this->config.apply_sensor_settings
+            ? "Settings applied"
+            : "Settings compared only (sensor.apply is false)",
+        verified,
+        report.settings.size(),
+        report.problems());
     return true;
+}
+
+void MultiscanNode::stopStreaming()
+{
+    if (this->cola.connected())
+    {
+        sopas::SensorSession session(
+            this->cola,
+            this->config.sopas_password,
+            static_cast<int>(this->config.sopas_read_timeout * 1e3));
+        std::string err;
+        if (!session.stop(err))
+        {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: Stopping the sensor output failed: %s",
+                err.c_str());
+        }
+    }
+    this->cola.disconnect();
 }
 
 uint64_t MultiscanNode::toHostTime(uint64_t sensor_us, uint64_t recv_ns)
@@ -544,13 +755,13 @@ void MultiscanNode::runReceiver()
         "\n\tLidar IP address: %s"
         "\n\tDriver IP address: %s"
         "\n\tLidar UDP port: %d"
-        "\n\tSOPAS TCP port: %d"
-        "\n\tCoLa configuration: %s",
+        "\n\tSOPAS TCP port: %d (CoLa A)",
         this->config.lidar_hostname.c_str(),
-        this->config.driver_hostname.c_str(),
+        this->config.driver_hostname.empty()
+            ? "(auto)"
+            : this->config.driver_hostname.c_str(),
         this->config.lidar_udp_port,
-        this->config.sopas_tcp_port,
-        this->config.use_cola_binary ? "Binary" : "ASCII");
+        this->config.sopas_tcp_port);
 
     {
         std::string error;
@@ -599,9 +810,10 @@ void MultiscanNode::runReceiver()
             bool received_data = false;
             auto last_udp_recv_time = std::chrono::steady_clock::now();
             auto last_report_time = last_udp_recv_time;
+            auto last_sopas_check = last_udp_recv_time;
             this->assembler->reset();
 
-            while (this->is_running && sopas_tcp->isConnected())
+            while (this->is_running && this->cola.connected())
             {
                 PROFILING_SYNC();
                 PROFILING_FLUSH();
@@ -641,6 +853,12 @@ void MultiscanNode::runReceiver()
                     this->reportStreamHealth();
                     last_report_time = now;
                 }
+                if (now - last_sopas_check > std::chrono::seconds(1))
+                {
+                    // handles events and notices a closed connection
+                    this->cola.poll(0);
+                    last_sopas_check = now;
+                }
 
                 if (n > 0)
                 {
@@ -678,15 +896,12 @@ void MultiscanNode::runReceiver()
 
     END_L:
 
-        if (this->sopas_tcp->isConnected())
-        {
-            this->sopas_service->sendAuthorization();
-            this->sopas_service->sendMultiScanStopCmd(true);
-        }
+        const bool sopas_lost = !this->cola.connected();
+        this->stopStreaming();
 
         if (this->is_running)
         {
-            if (!this->sopas_tcp->isConnected())
+            if (sopas_lost)
             {
                 RCLCPP_ERROR(
                     this->get_logger(),
