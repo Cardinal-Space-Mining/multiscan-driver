@@ -14,7 +14,7 @@
 
 #include "compact/decoder.hpp"
 #include "compact/point_layout.hpp"
-#include "legacy_slot_assembler.hpp"
+#include "frame_assembler.hpp"
 #include "oracle/legacy_pipeline.hpp"
 #include "support/compact_packet.hpp"
 #include "support/expected_points.hpp"
@@ -30,38 +30,27 @@ namespace compact = multiscan::compact;
 namespace
 {
 
-/* The node's data path (MultiscanNode::handleScan/publishScan) minus ROS. */
+/* The node's scan data path (MultiscanNode::handleDatagram/publishFrame) minus ROS. */
 class NewPipeline
 {
 public:
     explicit NewPipeline(uint32_t echo_selection = 1, PointLayout layout = PointLayout::all()) :
-        decoder(layout, {.echo_selection = echo_selection})
+        decoder(layout, {.echo_selection = echo_selection}),
+        assembler(decoder, {}, [](uint64_t us, uint64_t) { return us * 1000; })
     {
     }
 
     void feed(std::span<const uint8_t> d)
     {
         if (compact::telegramType(d) != compact::TelegramType::Scan) return;
-        uint64_t seg = UINT64_MAX;
-        if (d.size() >= 40) std::memcpy(&seg, d.data() + 32, 8);
-        if (seg >= 12) return;
-        const size_t step = decoder.layout().pointStep();
-        compact::ScanInfo info;
-        auto err = decoder.decode(d, assembler.slotBuffer(seg, 4096, step), 4096, info);
-        if (err != compact::Error::None)
-        {
-            errors++;
-            return;
-        }
-        if (assembler.commit(seg, info.points, 0))
-        {
-            clouds.emplace_back();
-            assembler.take(clouds.back(), step);
-        }
+        if (assembler.add(d, 0, frames) != compact::Error::None) errors++;
+        for (auto& f : frames) clouds.push_back(std::move(f.data));
+        frames.clear();
     }
 
     compact::ScanDecoder decoder;
-    multiscan::LegacySlotAssembler assembler;
+    multiscan::FrameAssembler assembler;
+    std::vector<multiscan::FrameAssembler::Frame> frames;
     std::vector<std::vector<uint8_t>> clouds;
     size_t errors = 0;
 };

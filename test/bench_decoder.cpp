@@ -9,7 +9,7 @@
 #include <cstring>
 
 #include "compact/decoder.hpp"
-#include "legacy_slot_assembler.hpp"
+#include "frame_assembler.hpp"
 #include "oracle/legacy_pipeline.hpp"
 #include "support/mscap.hpp"
 
@@ -19,6 +19,7 @@ using Clock = std::chrono::steady_clock;
 int main(int argc, char** argv)
 {
     const int iters = argc > 1 ? std::atoi(argv[1]) : 20;
+
     for (const char* file : {"live_1echo.mscap.gz", "all_layers_3echo.mscap.gz"})
     {
         std::vector<ms_test::CapturedDatagram> scans;
@@ -39,26 +40,35 @@ int main(int argc, char** argv)
         const double us_old = std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / n;
 
         compact::ScanDecoder dec(multiscan::PointLayout::all());
-        multiscan::LegacySlotAssembler asmb;
-        std::vector<uint8_t> cloud;
+        std::vector<multiscan::FrameAssembler::Frame> frames;
         size_t clouds_new = 0;
+        t0 = Clock::now();
+        for (int i = 0; i < iters; i++)
+        {
+            // a fresh assembler per pass: the captures' frame numbers repeat
+            multiscan::FrameAssembler asmb(dec, {}, [](uint64_t us, uint64_t) { return us * 1000; });
+            for (const auto& d : scans)
+            {
+                if (asmb.add(d.data, d.recv_time_ns, frames) != compact::Error::None) return 1;
+                clouds_new += frames.size();
+                frames.clear();
+            }
+        }
+        const double us_new = std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / n;
+
+        // decoder alone, into one reused buffer: what the assembler adds is the difference
+        std::vector<uint8_t> scratch(4096 * 52);
         t0 = Clock::now();
         for (int i = 0; i < iters; i++)
         {
             for (const auto& d : scans)
             {
-                uint64_t seg;
-                std::memcpy(&seg, d.data.data() + 32, 8);
                 compact::ScanInfo info;
-                if (dec.decode(d.data, asmb.slotBuffer(seg, 4096, 52), 4096, info) != compact::Error::None) return 1;
-                if (asmb.commit(seg, info.points, 0))
-                {
-                    asmb.take(cloud, 52);
-                    clouds_new++;
-                }
+                if (dec.decode(d.data, scratch.data(), 4096, info) != compact::Error::None) return 1;
             }
         }
-        const double us_new = std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / n;
+        const double us_dec = std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / n;
+        std::printf("%-26s decoder alone %6.2f us/segment\n", "", us_dec);
         std::printf("%-26s %5zu B/segment: old %7.2f us/segment, new %6.2f us/segment (%.1fx), "
                     "%.3f -> %.3f ms per 20 Hz frame (%zu/%zu clouds)\n",
                     file, scans[0].data.size(), us_old, us_new, us_old / us_new, us_old * 12 / 1000,

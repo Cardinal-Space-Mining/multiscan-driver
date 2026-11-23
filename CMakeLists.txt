@@ -43,7 +43,9 @@ add_library(scansegment_xd STATIC
 # --- Core (ROS-free decoding) ----------------------------------------------------
 add_library(multiscan_core STATIC
   "src/compact/decoder.cpp"
-  "src/compact/point_layout.cpp")
+  "src/compact/point_layout.cpp"
+  "src/frame_assembler.cpp"
+  "src/net/udp_receiver.cpp")
 target_include_directories(multiscan_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src" )
 target_link_libraries(multiscan_core PUBLIC
@@ -98,6 +100,12 @@ if(BUILD_TESTING)
 
     ament_add_gtest(test_decoder "test/test_decoder.cpp")
     target_link_libraries(test_decoder multiscan_test_oracle)
+
+    ament_add_gtest(test_frame_assembler "test/test_frame_assembler.cpp")
+    target_link_libraries(test_frame_assembler multiscan_test_oracle)
+
+    ament_add_gtest(test_udp_receiver "test/test_udp_receiver.cpp")
+    target_link_libraries(test_udp_receiver multiscan_core)
 
     # not a test: oracle vs new decoder timing on the captures
     add_executable(bench_decoder "test/bench_decoder.cpp")

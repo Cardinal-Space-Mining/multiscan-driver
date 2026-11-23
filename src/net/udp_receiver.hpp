@@ -37,76 +37,74 @@
 *                                                                              *
 *******************************************************************************/
 
-/*  The driver's original frame assembly: one slot per segment index, the
- *  newest segment wins, and a frame is emitted once all 12 slots are filled.
- *  Kept only so the new decoder can be verified against the old driver end to
- *  end; it is replaced by the frame-number based assembler next (it never
- *  publishes when the sensor omits segments, see test_legacy_oracle.cpp).
+/*  Receives UDP datagrams on one or more ports (Linux).
+ *
+ *  - batched reads (recvmmsg) into preallocated buffers
+ *  - kernel receive timestamps (SO_TIMESTAMPNS, CLOCK_REALTIME)
+ *  - large receive buffers (SO_RCVBUF, capped by net.core.rmem_max)
+ *  - stop() wakes a blocked receive() immediately from any thread; it is
+ *    final, receive() returns -1 from then on
  */
 #pragma once
 
-#include <algorithm>
-#include <array>
+#include <atomic>
 #include <cstdint>
-#include <cstring>
-#include <limits>
+#include <span>
+#include <string>
 #include <vector>
 
 
 namespace multiscan
 {
 
-class LegacySlotAssembler
+class UdpReceiver
 {
 public:
-    static constexpr size_t SEGMENTS = 12;
-
-    /* Buffer to decode segment `index` into (room for `capacity` points). */
-    uint8_t* slotBuffer(size_t index, size_t capacity, size_t point_step)
+    struct Datagram
     {
-        Slot& s = slots[index];
-        s.data.resize(capacity * point_step);
-        return s.data.data();
-    }
+        std::span<const uint8_t> data;  // valid until the next receive()
+        uint64_t recv_ns = 0;           // kernel receive time, CLOCK_REALTIME
+        uint16_t port = 0;              // local port it arrived on
+    };
 
-    /* Commit a decoded segment. Returns true when a frame is complete. */
-    bool commit(size_t index, size_t points, uint64_t stamp_ns)
-    {
-        Slot& s = slots[index];
-        s.points = points;
-        s.stamp_ns = stamp_ns;
-        fill_mask |= (1u << index);
-        return fill_mask == (1u << SEGMENTS) - 1;
-    }
+    static constexpr size_t MAX_DATAGRAM_BYTES = 65536;
 
-    /* Concatenate the slots in segment order into `out` and reset. Returns
-     * the earliest segment stamp. */
-    uint64_t take(std::vector<uint8_t>& out, size_t point_step)
-    {
-        size_t total = 0;
-        for (const Slot& s : slots) total += s.points;
-        out.resize(total * point_step);
-        uint64_t earliest = std::numeric_limits<uint64_t>::max();
-        size_t off = 0;
-        for (const Slot& s : slots)
-        {
-            std::memcpy(out.data() + off, s.data.data(), s.points * point_step);
-            off += s.points * point_step;
-            earliest = std::min(earliest, s.stamp_ns);
-        }
-        fill_mask = 0;
-        return earliest;
-    }
+    explicit UdpReceiver(size_t batch_size = 16);
+    ~UdpReceiver();
+    UdpReceiver(const UdpReceiver&) = delete;
+    UdpReceiver& operator=(const UdpReceiver&) = delete;
+
+    /* Bind 0.0.0.0:port for each port (duplicates ignored, 0 = any free
+     * port). Returns false and sets `error` on failure. */
+    bool open(
+        const std::vector<uint16_t>& ports,
+        int rcvbuf_bytes,
+        std::string& error);
+    void close();
+
+    /* Wait up to timeout_ms for data and return what is available (at most
+     * batch_size datagrams per socket). Returns the number of datagrams,
+     * 0 on timeout, -1 once stop() was called or on a socket error. */
+    int receive(std::vector<Datagram>& out, int timeout_ms);
+
+    /* Wake receive() and make it (and every later call) return -1.
+     * Safe to call from any thread at any time. */
+    void stop();
+
+    const std::vector<uint16_t>& ports() const { return bound_ports; }
+    /* Receive buffer size the kernel granted (per socket, bytes). */
+    int receiveBufferBytes() const { return rcvbuf_actual; }
+    uint64_t truncatedDatagrams() const { return truncated; }
 
 private:
-    struct Slot
-    {
-        std::vector<uint8_t> data;
-        size_t points = 0;
-        uint64_t stamp_ns = 0;
-    };
-    std::array<Slot, SEGMENTS> slots;
-    uint32_t fill_mask = 0;
+    struct Socket;
+    std::vector<Socket*> sockets;
+    std::vector<uint16_t> bound_ports;
+    size_t batch;
+    int wake_fd = -1;  // created once, lives as long as the object
+    std::atomic<bool> stopped{false};
+    int rcvbuf_actual = 0;
+    uint64_t truncated = 0;
 };
 
 }  // namespace multiscan
