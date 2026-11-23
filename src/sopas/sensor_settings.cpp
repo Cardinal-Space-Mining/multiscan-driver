@@ -42,6 +42,8 @@
 #include <cmath>
 #include <sstream>
 
+#include <arpa/inet.h>
+
 #include "cola_client.hpp"
 
 
@@ -108,6 +110,17 @@ std::string SensorSettings::validate() const
     if (contamination.response_time_s < 3 || contamination.response_time_s > 60)
     {
         e << "contamination response time must be 3..60 s; ";
+    }
+    if (time_sync.mode == TimeSyncMode::Ntp)
+    {
+        if (time_sync.ntp_update_s < 1 || time_sync.ntp_update_s > 3600)
+        {
+            e << "NTP update interval must be 1..3600 s; ";
+        }
+        if (!time_sync.ntp_server.empty() && !parseIpv4(time_sync.ntp_server))
+        {
+            e << "NTP server must be an IPv4 address; ";
+        }
     }
     std::string s = e.str();
     if (s.size() >= 2)
@@ -213,6 +226,23 @@ std::vector<SettingItem> settingItems(const SensorSettings& s)
         add("ContaminationConfig", args, exp);
     }
 
+    add("TSCRole",
+        digit(static_cast<int>(s.time_sync.mode)),
+        {static_cast<int>(s.time_sync.mode)});
+    if (s.time_sync.mode == TimeSyncMode::Ntp)
+    {
+        // validate() accepts an empty server; the driver fills it in first
+        const auto ip = parseIpv4(s.time_sync.ntp_server)
+                            .value_or(std::array<uint8_t, 4>{0, 0, 0, 0});
+        add("TSCTCSrvAddr",
+            num(ip[0]) + " " + num(ip[1]) + " " + num(ip[2]) + " " + num(ip[3]),
+            {ip[0], ip[1], ip[2], ip[3]});
+        add("TSCTCupdatetime",
+            num(s.time_sync.ntp_update_s),
+            {s.time_sync.ntp_update_s});
+        add("TSCTCtimezone", num(TIMEZONE_UTC), {TIMEZONE_UTC});
+    }
+
     // a method without read-back; its reply status must be 0
     items.push_back(
         {"mCLsetscancfglist",
@@ -303,6 +333,38 @@ std::optional<ContaminationSensitivity> contaminationSensitivityFromString(
         return ContaminationSensitivity::Low;
     }
     return std::nullopt;
+}
+
+std::optional<TimeSyncMode> timeSyncModeFromString(const std::string& s)
+{
+    if (s == "off")
+    {
+        return TimeSyncMode::Off;
+    }
+    if (s == "ntp")
+    {
+        return TimeSyncMode::Ntp;
+    }
+    if (s == "ptp")
+    {
+        return TimeSyncMode::Ptp;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::array<uint8_t, 4>> parseIpv4(const std::string& s)
+{
+    in_addr a{};
+    if (::inet_pton(AF_INET, s.c_str(), &a) != 1)
+    {
+        return std::nullopt;
+    }
+    const uint32_t ip = ntohl(a.s_addr);
+    return std::array<uint8_t, 4>{
+        static_cast<uint8_t>(ip >> 24),
+        static_cast<uint8_t>(ip >> 16),
+        static_cast<uint8_t>(ip >> 8),
+        static_cast<uint8_t>(ip)};
 }
 
 }  // namespace multiscan::sopas

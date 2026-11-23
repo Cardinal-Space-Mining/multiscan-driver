@@ -7,6 +7,8 @@ find_package(csm_utils REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(csm_metrics REQUIRED)
@@ -18,8 +20,8 @@ include_directories(${EIGEN3_INCLUDE_DIRS})
 include_directories(SYSTEM)
 
 # --- Vendored sick_scan_xd remnants -----------------------------------------------
-# The compact parser is only the reference the tests compare against (test/oracle);
-# the software PLL still converts sensor timestamps until the time sync rewrite.
+# Only the reference the tests compare against (test/oracle); not linked into
+# the driver.
 add_library(scansegment_xd STATIC
   "src/sick_scan_xd/compact_parser.cpp"
   "src/sick_scan_xd/scansegment_parser_output.cpp"
@@ -36,7 +38,8 @@ add_library(multiscan_core STATIC
   "src/net/udp_receiver.cpp"
   "src/sopas/cola_client.cpp"
   "src/sopas/sensor_session.cpp"
-  "src/sopas/sensor_settings.cpp")
+  "src/sopas/sensor_settings.cpp"
+  "src/time_sync.cpp")
 target_include_directories(multiscan_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src" )
 target_link_libraries(multiscan_core PUBLIC
@@ -47,7 +50,6 @@ add_executable(multiscan_driver
     "src/multiscan_driver.cpp" )
 target_link_libraries(multiscan_driver
     multiscan_core
-    scansegment_xd
     csm_metrics::stats
     csm_metrics::profiling
     Eigen3::Eigen )
@@ -58,6 +60,8 @@ auto_target_dependencies(multiscan_driver
     csm_utils
     rclcpp
     sensor_msgs
+    geometry_msgs
+    diagnostic_msgs
     tf2_ros
     csm_metrics )
 
@@ -101,6 +105,9 @@ if(BUILD_TESTING)
     ament_add_gtest(test_sopas "test/test_sopas.cpp")
     target_link_libraries(test_sopas multiscan_test_oracle)
 
+    ament_add_gtest(test_time_sync "test/test_time_sync.cpp")
+    target_link_libraries(test_time_sync multiscan_core)
+
     # not a test: oracle vs new decoder timing on the captures
     add_executable(bench_decoder "test/bench_decoder.cpp")
     target_link_libraries(bench_decoder multiscan_test_oracle)
@@ -109,6 +116,10 @@ endif()
 # --- Export -------------------------------------------------------------------
 install(TARGETS
     multiscan_driver
+    DESTINATION lib/${PROJECT_NAME} )
+
+install(PROGRAMS
+    "tools/ms_geometry.py"
     DESTINATION lib/${PROJECT_NAME} )
 
 install(DIRECTORY include/
@@ -120,6 +131,8 @@ ament_export_dependencies(
     csm_utils
     rclcpp
     sensor_msgs
+    geometry_msgs
+    diagnostic_msgs
     tf2_ros
     csm_metrics )
 ament_package()

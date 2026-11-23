@@ -38,7 +38,10 @@ public:
         uint32_t echo_selection = 1,
         PointLayout layout = PointLayout::all()) :
         decoder(layout, {.echo_selection = echo_selection}),
-        assembler(decoder, {}, [](uint64_t us, uint64_t) { return us * 1000; })
+        assembler(
+            decoder,
+            {},
+            [](const compact::ScanInfo&, uint64_t) -> int64_t { return 0; })
     {
     }
 

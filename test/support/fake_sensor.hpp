@@ -4,7 +4,8 @@
  *  test/data/sopas_transcript_fw2.3.txt: variables start with the recorded
  *  values; sWN needs a login (else sFA A), unknown variables give sFA 3,
  *  writes are echoed back by sRN the way the device prints them (hex, negative
- *  values as 32-bit two's complement), sMN Run logs out.
+ *  values as 32-bit two's complement), sMN Run logs out, DevSta reads 2
+ *  (service mode) while logged in.
  *
  *  Faults can be injected: rejected or ignored writes, events before
  *  replies, byte-by-byte sending, stale replies, dropped connections.
@@ -275,6 +276,10 @@ private:
             if (!vars.count(name))
             {
                 return "sFA 3";
+            }
+            if (name == "DevSta" && logged_in)
+            {
+                return "sRA DevSta 2";  // service mode while logged in
             }
             return "sRA " + name + (vars[name].empty() ? "" : " " + vars[name]);
         }

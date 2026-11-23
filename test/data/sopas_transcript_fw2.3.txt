@@ -256,3 +256,80 @@
 < sAN Run 1
 > sWN FREchoFilter 2
 < sFA A
+# Appended 2026-11-23 (same sensor after a power cycle): status reads while
+# logged out, then time synchronisation writes and their read-backs. Restored
+# afterwards; nothing was persisted.
+> sRN TSCRole
+< sRA TSCRole 0
+> sRN DeviceTime
+< sFA 3
+> sRN TSCTCSrvAddr
+< sRA TSCTCSrvAddr C0 A8 0 B
+> sRN TSCTCtimezone
+< sRA TSCTCtimezone 24
+> sRN TSCTCupdatetime
+< sRA TSCTCupdatetime 258
+> sRN DevSta
+< sRA DevSta 3
+> sRN OPcurtmpdev
+< sRA OPcurtmpdev 41E86666
+> sRN ContaminationResult
+< sRA ContaminationResult 0 0
+> sRN ContaminationData
+< sRA ContaminationData 1 1 1 1 1 1 1 1 1 1 1 1
+> sRN SCdevicestate
+< sRA SCdevicestate 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sWN TSCRole 1
+< sWA TSCRole
+> sWN TSCTCSrvAddr +10 +11 +10 +1
+< sWA TSCTCSrvAddr
+> sWN TSCTCupdatetime +10
+< sWA TSCTCupdatetime
+> sWN TSCTCtimezone +34
+< sWA TSCTCtimezone
+> sWN TSCTCupdatetime +0
+< sFA 30
+> sWN TSCTCupdatetime +3601
+< sFA 30
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN TSCRole
+< sRA TSCRole 1
+> sRN TSCTCSrvAddr
+< sRA TSCTCSrvAddr A B A 1
+> sRN TSCTCupdatetime
+< sRA TSCTCupdatetime A
+> sRN TSCTCtimezone
+< sRA TSCTCtimezone 22
+> sWN TSCRole 3
+< sWA TSCRole
+> sWN TSCRole 2
+< sFA 5
+> sMN Run
+< sAN Run 1
+> sMN SetAccessMode 3 F4724744
+< sAN SetAccessMode 1
+> sRN TSCRole
+< sRA TSCRole 3
+> sWN TSCRole 0
+< sWA TSCRole
+> sWN TSCTCSrvAddr C0 A8 0 B
+< sWA TSCTCSrvAddr
+> sWN TSCTCupdatetime 258
+< sWA TSCTCupdatetime
+> sWN TSCTCtimezone 24
+< sWA TSCTCtimezone
+> sMN Run
+< sAN Run 1
+> sRN TSCRole
+< sRA TSCRole 0
+> sRN TSCTCSrvAddr
+< sRA TSCTCSrvAddr C0 A8 0 B
+> sRN TSCTCupdatetime
+< sRA TSCTCupdatetime 258
+> sRN TSCTCtimezone
+< sRA TSCTCtimezone 24

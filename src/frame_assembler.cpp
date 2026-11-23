@@ -51,11 +51,12 @@ namespace multiscan
 FrameAssembler::FrameAssembler(
     compact::ScanDecoder& dec,
     Config config,
-    TimeConverter to_host_time) :
+    ClockOffset offset) :
     decoder{dec},
     cfg{config},
-    to_host{std::move(to_host_time)},
-    step{dec.layout().pointStep()}
+    clock_offset{std::move(offset)},
+    step{dec.layout().pointStep()},
+    time_field{dec.layout().offset(Field::Time)}
 {
     cfg.segments_per_frame =
         std::clamp<uint32_t>(cfg.segments_per_frame, 1, 32);
@@ -219,6 +220,28 @@ compact::Error FrameAssembler::add(
     // the segment shape only changes on reconfiguration (then the retry above grows it)
     segment_points_hint = info.points;
 
+    // to the host clock; point times are whole microseconds
+    const int64_t offset_ns = clock_offset(info, recv_ns);
+    const int64_t offset_us = offset_ns >= 0 ? (offset_ns + 500) / 1000
+                                             : -((-offset_ns + 500) / 1000);
+    if (time_field >= 0 && offset_us != 0)
+    {
+        uint8_t* p = dst + time_field;
+        for (uint32_t i = 0; i < info.points; i++, p += step)
+        {
+            uint64_t t;
+            std::memcpy(&t, p, sizeof(t));
+            t += static_cast<uint64_t>(offset_us);
+            std::memcpy(p, &t, sizeof(t));
+        }
+    }
+    const uint64_t seg_stamp_ns = static_cast<uint64_t>(
+        static_cast<int64_t>(info.start_time_us * 1000) + offset_ns);
+    const uint64_t seg_min_us =
+        info.time_min_us + static_cast<uint64_t>(offset_us);
+    const uint64_t seg_max_us =
+        info.time_max_us + static_cast<uint64_t>(offset_us);
+
     // last_counter is the highest counter seen; a lower one arriving later
     // (reordered datagram) fills one of the gaps counted before
     const uint64_t counter = info.telegram_counter;
@@ -308,9 +331,9 @@ compact::Error FrameAssembler::add(
 
     seen_mask |= bit;
     used_points += info.points;
-    stamp_ns = std::min(stamp_ns, to_host(info.start_time_us, recv_ns));
-    time_min_us = std::min(time_min_us, info.time_min_us);
-    time_max_us = std::max(time_max_us, info.time_max_us);
+    stamp_ns = std::min(stamp_ns, seg_stamp_ns);
+    time_min_us = std::min(time_min_us, seg_min_us);
+    time_max_us = std::max(time_max_us, seg_max_us);
     last_segment_ns = recv_ns;
     counters.segments++;
 

@@ -79,6 +79,18 @@ enum class ContaminationSensitivity : int
     Low = 2,
 };
 
+/* What the sensor synchronises its clock to (TSCRole). Without it the clock
+ * counts from power-up. */
+enum class TimeSyncMode : int
+{
+    Off = 0,
+    Ntp = 1,  // polls ntp_server
+    Ptp = 3,  // IEEE 1588 slave; needs a PTP master on the network
+};
+
+/* TSCTCtimezone value for UTC (COORD_WORLD_TIME), written with NTP. */
+constexpr int64_t TIMEZONE_UTC = 34;
+
 struct SensorSettings
 {
     EchoFilter echo_filter = EchoFilter::Last;
@@ -158,6 +170,15 @@ struct SensorSettings
         bool error = true;
     } contamination;
 
+    struct
+    {
+        TimeSyncMode mode = TimeSyncMode::Off;
+        /* IPv4 of the NTP server. Must be set before settingItems() when
+         * mode is Ntp (the driver fills in its own address if empty). */
+        std::string ntp_server = "";
+        int64_t ntp_update_s = 10;  // 1..3600
+    } time_sync;
+
     /* Empty if valid, else what is wrong. */
     std::string validate() const;
 };
@@ -190,5 +211,9 @@ std::optional<ContaminationStrategy> contaminationStrategyFromString(
     const std::string& s);
 std::optional<ContaminationSensitivity> contaminationSensitivityFromString(
     const std::string& s);
+std::optional<TimeSyncMode> timeSyncModeFromString(const std::string& s);
+
+/* Dotted IPv4 -> its four bytes, or nullopt. */
+std::optional<std::array<uint8_t, 4>> parseIpv4(const std::string& s);
 
 }  // namespace multiscan::sopas

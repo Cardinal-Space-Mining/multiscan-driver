@@ -47,6 +47,8 @@
  *    5. sMN Run (activates the changes; logs out)
  *    6. log in, read every setting back and compare with the configuration
  *    7. enable scan (and IMU) output, sMN Run, log in, LMCstartmeas
+ *    8. sMN Run again to log out: the stream keeps running, and DevSta reads
+ *       "service mode" while a client is logged in
  *
  *  Nothing is saved permanently (no mEEwriteall): a power cycle restores the
  *  sensor's stored configuration, which is why this runs on every connect.
@@ -89,6 +91,43 @@ struct SettingStatus
     std::string problem;  // why it isn't written/verified
 };
 
+/* Polled while streaming (no login needed). */
+struct SensorStatus
+{
+    enum class DeviceState : int
+    {
+        Reserved = 0,
+        Startup = 1,
+        ServiceMode = 2,  // also while a client is logged in
+        Normal = 3,
+        Suspended = 4,
+        ServiceRecommended = 5,
+        ServiceRequired = 6,
+        RecoverableError = 7,
+        FatalError = 8,
+    };
+    enum class Sector : int
+    {
+        Deactivated = 0,
+        Clean = 1,
+        Warning = 2,
+        Error = 3,
+    };
+
+    bool have_state = false;
+    int state = 0;  // DeviceState, or the raw value if outside it
+    bool have_temperature = false;
+    float temperature_c = 0.f;  // internal, not ambient
+    bool have_contamination = false;
+    bool contamination_warning = false;
+    bool contamination_error = false;
+    bool have_sectors = false;
+    std::vector<int> sectors;  // Sector per 30 deg sector
+};
+
+const char* deviceStateName(int state);
+const char* sectorName(int sector);
+
 struct StartReport
 {
     DeviceInfo device;
@@ -113,6 +152,10 @@ public:
         StartReport& report);
     /* Disable scan and IMU output. */
     bool stop(std::string& error);
+    /* Read device state, temperature and contamination. Variables the
+     * sensor doesn't know are left unset; false only if the connection
+     * failed (error says why). */
+    bool readStatus(SensorStatus& status, std::string& error);
 
 private:
     Result call(const std::string& telegram);

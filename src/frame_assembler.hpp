@@ -53,6 +53,9 @@
  *  - Duplicate and late segments are dropped; gaps in the telegram counter
  *    are counted as lost telegrams; frame numbers jumping backwards (sensor
  *    restart) reset the state.
+ *  - Times are moved to the host clock: a callback gives the host - sensor
+ *    offset for each telegram, which is added to the frame stamp and to
+ *    every point's time field.
  */
 #pragma once
 
@@ -93,8 +96,8 @@ public:
         uint32_t segment_mask = 0;   // segments contained
         uint32_t expected_mask = 0;  // segments expected when emitted
         bool complete = false;
-        uint64_t stamp_ns = 0;     // earliest segment stamp (host clock)
-        uint64_t time_min_us = 0;  // earliest/latest point time (sensor clock)
+        uint64_t stamp_ns = 0;     // earliest segment start (host clock)
+        uint64_t time_min_us = 0;  // earliest/latest point time (host clock)
         uint64_t time_max_us = 0;
     };
 
@@ -117,15 +120,16 @@ public:
         compact::Error last_decode_error = compact::Error::None;
     };
 
-    /* Sensor time (us) of a segment and its host receive time (ns) -> header
-     * stamp (ns). */
-    using TimeConverter =
-        std::function<uint64_t(uint64_t sensor_us, uint64_t recv_ns)>;
+    /* host - sensor clock offset (ns) for a decoded telegram that arrived at
+     * recv_ns. Called for every telegram that decodes, so it can also feed a
+     * clock estimator. */
+    using ClockOffset =
+        std::function<int64_t(const compact::ScanInfo& info, uint64_t recv_ns)>;
 
     FrameAssembler(
         compact::ScanDecoder& decoder,
         Config config,
-        TimeConverter to_host_time);
+        ClockOffset clock_offset);
 
     /* Decode and assemble one scan telegram. Frames that complete or end
      * because of it are appended to `out`. */
@@ -152,8 +156,9 @@ private:
 
     compact::ScanDecoder& decoder;
     Config cfg;
-    TimeConverter to_host;
+    ClockOffset clock_offset;
     uint32_t step;
+    int32_t time_field;  // byte offset of the point time, or -1
     uint32_t all_mask;
 
     // current frame

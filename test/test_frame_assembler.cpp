@@ -36,9 +36,12 @@ constexpr uint32_t ALL = 0xFFF;
 
 struct Harness
 {
-    explicit Harness(FrameAssembler::Config cfg = {}) :
+    explicit Harness(
+        FrameAssembler::Config cfg = {},
+        FrameAssembler::ClockOffset offset =
+            [](const compact::ScanInfo&, uint64_t) -> int64_t { return 0; }) :
         decoder(PointLayout::all()),
-        assembler(decoder, cfg, [](uint64_t us, uint64_t) { return us * 1000; })
+        assembler(decoder, cfg, std::move(offset))
     {
     }
 
@@ -109,7 +112,10 @@ TEST(FrameAssembler, NarrowOutputRangePublishesEveryFrame)
 {
     // real capture: the sensor sends segments 0, 1, 5, 6, 7, 11 only
     compact::ScanDecoder dec(PointLayout::all());
-    FrameAssembler a(dec, {}, [](uint64_t us, uint64_t) { return us * 1000; });
+    FrameAssembler a(
+        dec,
+        {},
+        [](const compact::ScanInfo&, uint64_t) -> int64_t { return 0; });
     std::vector<FrameAssembler::Frame> frames;
     std::vector<std::vector<ScanTelegram>> per_frame;
     for (const auto& d : readCapture(fixture("range_pm10.mscap.gz")))
@@ -208,6 +214,69 @@ TEST(FrameAssembler, CompleteFramesAreEmittedOnTheirLastSegment)
     EXPECT_TRUE(h.frames[0].complete);
     EXPECT_EQ(h.frames[0].stamp_ns, (1'000'000'000ULL + 5 * 50'000ULL) * 1000);
     h.expectFrameContent(h.frames[0], range(0, 12));
+}
+
+TEST(FrameAssembler, ClockOffsetMovesStampAndPointTimes)
+{
+    // host clock 1.234567891 s ahead of the sensor; point times are whole us
+    constexpr int64_t OFFSET_NS = 1'234'567'891;
+    constexpr uint64_t OFFSET_US = 1'234'568;
+    std::vector<std::pair<uint64_t, uint64_t>> calls;  // transmit us, recv ns
+    Harness h(
+        {},
+        [&calls](const compact::ScanInfo& info, uint64_t recv_ns) -> int64_t
+        {
+            calls.emplace_back(info.transmit_time_us, recv_ns);
+            return OFFSET_NS;
+        });
+    for (uint32_t s = 0; s < 12; s++)
+    {
+        h.feed(5, s);
+    }
+    h.feed(5, 3);  // duplicate: still a clock sample
+    ASSERT_EQ(h.frames.size(), 1u);
+    EXPECT_EQ(calls.size(), 13u);
+    EXPECT_EQ(calls[2].second, 5 * 50'000'000ULL + 2 * 4'167'000ULL);
+    EXPECT_NE(calls[2].first, 0u);
+
+    const auto& f = h.frames[0];
+    EXPECT_EQ(
+        f.stamp_ns,
+        (1'000'000'000ULL + 5 * 50'000ULL) * 1000 + OFFSET_NS);
+    EXPECT_EQ(f.time_min_us, 1'000'000'000ULL + 5 * 50'000ULL + OFFSET_US);
+
+    std::vector<ExpectedPoint> exp;
+    for (uint32_t s = 0; s < 12; s++)
+    {
+        auto p = expectedPoints(h.sent.at({5, s}), 1);
+        exp.insert(exp.end(), p.begin(), p.end());
+    }
+    ASSERT_EQ(f.points, exp.size());
+    for (size_t i = 0; i < exp.size(); i++)
+    {
+        const auto got = readAllFieldsPoint(f.data.data() + i * 52);
+        ASSERT_EQ(got.time_us, exp[i].time_us + OFFSET_US) << i;
+        ASSERT_EQ(got.index, exp[i].index);
+    }
+}
+
+TEST(FrameAssembler, NegativeClockOffset)
+{
+    Harness h(
+        {},
+        [](const compact::ScanInfo&, uint64_t) -> int64_t
+        { return -2'500'400; });
+    for (uint32_t s = 0; s < 12; s++)
+    {
+        h.feed(5, s);
+    }
+    ASSERT_EQ(h.frames.size(), 1u);
+    EXPECT_EQ(
+        h.frames[0].stamp_ns,
+        (1'000'000'000ULL + 5 * 50'000ULL) * 1000 - 2'500'400);
+    EXPECT_EQ(
+        h.frames[0].time_min_us,
+        1'000'000'000ULL + 5 * 50'000ULL - 2'500);
 }
 
 TEST(FrameAssembler, PartialFramesCanBeDiscarded)

@@ -39,6 +39,9 @@
 
 #include "sensor_session.hpp"
 
+#include <cmath>
+#include <cstring>
+
 #include <arpa/inet.h>
 
 
@@ -320,7 +323,107 @@ bool SensorSession::start(
               (r.ok() ? std::string("not allowed") : r.describe());
         return false;
     }
+    return run(err);  // log out
+}
+
+bool SensorSession::readStatus(SensorStatus& status, std::string& error)
+{
+    status = SensorStatus{};
+    auto read = [&](const char* var, Result& r) -> bool
+    {
+        r = call(std::string("sRN ") + var);
+        if (r.status == Status::IoError || r.status == Status::Timeout ||
+            r.status == Status::NotConnected)
+        {
+            error = std::string("'sRN ") + var + "': " + r.describe();
+            return false;
+        }
+        return true;
+    };
+    auto usable = [](const Result& r, size_t min_args)
+    { return r.ok() && r.reply.args.size() >= min_args; };
+
+    Result r;
+    if (!read("DevSta", r))
+    {
+        return false;
+    }
+    if (usable(r, 1))
+    {
+        if (const auto v = parseNumber(r.reply.args[0]))
+        {
+            status.have_state = true;
+            status.state = static_cast<int>(*v);
+        }
+    }
+
+    if (!read("OPcurtmpdev", r))
+    {
+        return false;
+    }
+    if (usable(r, 1))
+    {
+        // IEEE 754 single precision printed as hex
+        if (const auto v = parseNumber(r.reply.args[0]))
+        {
+            const uint32_t bits = static_cast<uint32_t>(*v);
+            float t;
+            std::memcpy(&t, &bits, sizeof(t));
+            status.have_temperature = std::isfinite(t);
+            status.temperature_c = t;
+        }
+    }
+
+    if (!read("ContaminationResult", r))
+    {
+        return false;
+    }
+    if (usable(r, 2))
+    {
+        status.have_contamination = true;
+        status.contamination_warning = r.reply.args[0] != "0";
+        status.contamination_error = r.reply.args[1] != "0";
+    }
+
+    if (!read("ContaminationData", r))
+    {
+        return false;
+    }
+    if (usable(r, 1))
+    {
+        status.have_sectors = true;
+        for (const auto& a : r.reply.args)
+        {
+            status.sectors.push_back(
+                static_cast<int>(parseNumber(a).value_or(-1)));
+        }
+    }
     return true;
+}
+
+const char* deviceStateName(int state)
+{
+    static constexpr const char* NAMES[] = {
+        "reserved",
+        "startup",
+        "service mode",
+        "normal operation",
+        "suspended operation",
+        "service recommended",
+        "service required",
+        "recoverable error",
+        "fatal error"};
+    return (state >= 0 && state <= 8) ? NAMES[state] : "unknown";
+}
+
+const char* sectorName(int sector)
+{
+    static constexpr const char* NAMES[] = {
+        "deactivated",
+        "clean",
+        "warning",
+        "error"};
+    return (sector >= 0 && sector <= 3) ? NAMES[sector] : "unknown";
 }
 
 bool SensorSession::stop(std::string& error)

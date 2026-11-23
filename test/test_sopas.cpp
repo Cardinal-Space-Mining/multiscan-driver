@@ -91,6 +91,9 @@ SensorSettings transcriptTestValues()
         true};
     s.contamination.warning = true;
     s.contamination.error = false;
+    s.time_sync.mode = TimeSyncMode::Ntp;
+    s.time_sync.ntp_server = "10.11.10.1";
+    s.time_sync.ntp_update_s = 10;
     return s;
 }
 
@@ -146,10 +149,18 @@ TEST(SensorSettings, ExpectedReadbacksMatchTheRealDevice)
         {
             continue;  // interlace: no read-back
         }
+        // the device's read-back after the test write is one of the later
+        // replies (the first is the original value)
         const auto& replies = rb.at(it.name);
         ASSERT_GE(replies.size(), 2u) << it.name;
-        EXPECT_EQ(compareReadback(replies[1], it.expected), "")
-            << it.name << ": " << it.write;
+        bool matched = false;
+        std::string diff;
+        for (size_t i = 1; i < replies.size() && !matched; i++)
+        {
+            diff = compareReadback(replies[i], it.expected);
+            matched = diff.empty();
+        }
+        EXPECT_TRUE(matched) << it.name << ": " << it.write << ": " << diff;
     }
 }
 
@@ -178,6 +189,7 @@ TEST(SensorSettings, FakeFormatsWritesLikeTheDevice)
     // the simulator must turn every recorded write into the recorded read-back
     std::ifstream f(TRANSCRIPT);
     std::string line, pending_var, pending_args;
+    std::map<std::string, std::string> accepted;  // var -> last accepted args
     size_t checked = 0;
     while (std::getline(f, line))
     {
@@ -187,16 +199,25 @@ TEST(SensorSettings, FakeFormatsWritesLikeTheDevice)
             pending_var = t.name;
             pending_args = line.substr(2 + 4 + t.name.size() + 1);
         }
-        else if (
-            line.rfind("< sRA " + pending_var + " ", 0) == 0 &&
-            !pending_var.empty())
+        else if (line.rfind("< sWA ", 0) == 0 && !pending_var.empty())
         {
-            EXPECT_EQ(
-                FakeSensor::toDeviceFormat(pending_args),
-                line.substr(6 + pending_var.size() + 1))
-                << pending_var;
+            accepted[pending_var] =
+                pending_args;  // rejected writes (sFA) change nothing
             pending_var.clear();
-            checked++;
+        }
+        else if (line.rfind("< sRA ", 0) == 0)
+        {
+            const Telegram t = parseTelegram(line.substr(2));
+            const auto it = accepted.find(t.name);
+            if (it != accepted.end())
+            {
+                EXPECT_EQ(
+                    FakeSensor::toDeviceFormat(it->second),
+                    line.substr(6 + t.name.size() + 1))
+                    << t.name;
+                accepted.erase(it);
+                checked++;
+            }
         }
     }
     EXPECT_GE(checked, 18u);
@@ -358,7 +379,16 @@ TEST(SensorSession, StartAppliesVerifiesAndStartsStreaming)
             << "must never persist";
     }
     EXPECT_LT(first_run, first_readback_of_settings);
-    EXPECT_EQ(log.back().telegram, "sMN LMCstartmeas");
+    ASSERT_GE(log.size(), 2u);
+    EXPECT_EQ(log[log.size() - 2].telegram, "sMN LMCstartmeas");
+    EXPECT_EQ(log.back().telegram, "sMN Run");  // logs out
+
+    // logged out, so DevSta shows the real state rather than service mode
+    SensorStatus st;
+    std::string err;
+    ASSERT_TRUE(session.readStatus(st, err)) << err;
+    EXPECT_TRUE(st.have_state);
+    EXPECT_EQ(st.state, 3);
 }
 
 TEST(SensorSession, InterlaceIsAppliedAsAMethod)
@@ -492,6 +522,105 @@ TEST(SensorSession, EventsDuringStartAreHarmless)
     EXPECT_TRUE(session.start({"10.11.10.1", 2115, 2116, true}, {}, true, rep))
         << rep.error;
     EXPECT_EQ(rep.problems(), 0u);
+}
+
+TEST(SensorSettings, TimeSyncItems)
+{
+    SensorSettings s;
+    auto names = [](const SensorSettings& x)
+    {
+        std::vector<std::string> n;
+        for (const auto& it : settingItems(x))
+        {
+            if (it.name.rfind("TSC", 0) == 0)
+            {
+                n.push_back(it.write);
+            }
+        }
+        return n;
+    };
+    EXPECT_EQ(names(s), std::vector<std::string>{"sWN TSCRole 0"});
+    s.time_sync.mode = TimeSyncMode::Ptp;
+    EXPECT_EQ(names(s), std::vector<std::string>{"sWN TSCRole 3"});
+    s.time_sync.mode = TimeSyncMode::Ntp;
+    s.time_sync.ntp_server = "10.11.10.1";
+    s.time_sync.ntp_update_s = 10;
+    EXPECT_EQ(
+        names(s),
+        (std::vector<std::string>{
+            "sWN TSCRole 1",
+            "sWN TSCTCSrvAddr +10 +11 +10 +1",
+            "sWN TSCTCupdatetime +10",
+            "sWN TSCTCtimezone +34"}));
+    EXPECT_EQ(s.validate(), "");
+
+    // the device rejects 0 and 3601 (sFA 30)
+    s.time_sync.ntp_update_s = 0;
+    EXPECT_NE(s.validate().find("NTP update"), std::string::npos);
+    s.time_sync.ntp_update_s = 3601;
+    EXPECT_NE(s.validate().find("NTP update"), std::string::npos);
+    s.time_sync.ntp_update_s = 10;
+    s.time_sync.ntp_server = "ntp.local";
+    EXPECT_NE(s.validate().find("IPv4"), std::string::npos);
+    s.time_sync.ntp_server = "";  // the driver fills in its own address
+    EXPECT_EQ(s.validate(), "");
+
+    EXPECT_EQ(timeSyncModeFromString("ptp"), TimeSyncMode::Ptp);
+    EXPECT_FALSE(timeSyncModeFromString("gps"));
+}
+
+TEST(SensorSession, ReadsStatusLikeTheDevicePrintsIt)
+{
+    FakeSensor fake(TRANSCRIPT);
+    Connected c(fake);
+    SensorSession session(c.client, "F4724744", 1000);
+    SensorStatus st;
+    std::string err;
+
+    // recorded values: 48.32 deg C (first recording), all sectors clean, no
+    // contamination
+    ASSERT_TRUE(session.readStatus(st, err)) << err;
+    EXPECT_TRUE(st.have_state && st.have_temperature && st.have_contamination);
+    EXPECT_EQ(st.state, 3);
+    EXPECT_NEAR(st.temperature_c, 48.32f, 0.01f);
+    EXPECT_FALSE(st.contamination_warning || st.contamination_error);
+    ASSERT_TRUE(st.have_sectors);
+    EXPECT_EQ(st.sectors, std::vector<int>(12, 1));
+
+    // the second recording (29.05 deg C) and the manual's examples
+    fake.setValue("OPcurtmpdev", "41E86666");
+    ASSERT_TRUE(session.readStatus(st, err)) << err;
+    EXPECT_NEAR(st.temperature_c, 29.05f, 0.01f);
+    fake.setValue("OPcurtmpdev", "420C0000");
+    fake.setValue("ContaminationResult", "1 0");
+    fake.setValue("ContaminationData", "0 3 2 2 2 2 2 2 2 2 2 2");
+    fake.setValue("DevSta", "7");
+    ASSERT_TRUE(session.readStatus(st, err)) << err;
+    EXPECT_FLOAT_EQ(st.temperature_c, 35.f);
+    EXPECT_TRUE(st.contamination_warning);
+    EXPECT_FALSE(st.contamination_error);
+    EXPECT_EQ(st.sectors[0], 0);
+    EXPECT_EQ(st.sectors[1], 3);
+    EXPECT_STREQ(deviceStateName(st.state), "recoverable error");
+    EXPECT_STREQ(sectorName(st.sectors[1]), "error");
+
+    // a variable without values is left unset rather than failing
+    fake.setValue("ContaminationData", "");
+    ASSERT_TRUE(session.readStatus(st, err)) << err;
+    EXPECT_FALSE(st.have_sectors);
+    EXPECT_TRUE(st.have_state);
+}
+
+TEST(SensorSession, StatusReportsALostConnection)
+{
+    FakeSensor fake(TRANSCRIPT);
+    fake.close_after = 2;  // DevSta and OPcurtmpdev answered, then dropped
+    Connected c(fake);
+    SensorSession session(c.client, "F4724744", 1000);
+    SensorStatus st;
+    std::string err;
+    EXPECT_FALSE(session.readStatus(st, err));
+    EXPECT_NE(err.find("ContaminationResult"), std::string::npos) << err;
 }
 
 TEST(SensorSession, StopDisablesOutput)

@@ -16,6 +16,25 @@
     # With sensor.echo_filter "first" or "last" only one echo is sent.
     echo_selection: 1
 
+    time:
+      # estimated: sensor timestamps mapped to the host clock (offset + drift
+      #   fitted to the transmit/receive times; keeps the sensor's exact spacing)
+      # sensor:    sensor timestamps as is; only with sensor.time_sync ntp/ptp
+      #   (without sync the sensor clock counts from power-up)
+      # receive:   host receive time of each telegram (jittery; for debugging)
+      source: "estimated"
+
+    imu:
+      frame_id: ""              # "" = lidar_frame; else a static TF lidar_frame -> frame_id is published
+      publish_tf: true          # with the IMU offset from the optical origin (-17, +23.5, -30) mm
+      # diagonal variances (x, y, z); 0 = unknown
+      orientation_covariance: [0.0, 0.0, 0.0]
+      angular_velocity_covariance: [0.0, 0.0, 0.0]
+      linear_acceleration_covariance: [0.0, 0.0, 0.0]
+
+    diagnostics:
+      status_period: 2.0        # s between device state/temperature/contamination reads (0 = off)
+
     output:
       # any subset containing x, y, z; fields are always packed in this order
       point_fields: ["x", "y", "z", "intensity", "range", "azimuth", "elevation",
@@ -59,3 +78,12 @@
         sectors: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]   # 30 deg sectors (0/1)
         warning: true
         error: true
+      time_sync:                # sensor clock synchronisation (TSCRole)
+        # off | ntp | ptp (ptp needs a PTP master, e.g. ptp4l on this host).
+        # Measured with chrony on the host (fw 2.3): ntp locks within a second
+        # but the clock stays 1-4 ms off and is corrected in ~1-2 ms steps
+        # every update; with time.source "estimated", "off" (a smoothly
+        # drifting clock) gives cleaner stamps.
+        mode: "off"
+        ntp_server: ""          # IPv4; "" = this host (needs an NTP server, e.g. chrony with 'allow')
+        ntp_update_s: 10        # 1..3600

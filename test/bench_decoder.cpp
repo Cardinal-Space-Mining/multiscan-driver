@@ -59,7 +59,8 @@ int main(int argc, char** argv)
             multiscan::FrameAssembler asmb(
                 dec,
                 {},
-                [](uint64_t us, uint64_t) { return us * 1000; });
+                [](const compact::ScanInfo&, uint64_t) -> int64_t
+                { return 0; });
             for (const auto& d : scans)
             {
                 if (asmb.add(d.data, d.recv_time_ns, frames) !=

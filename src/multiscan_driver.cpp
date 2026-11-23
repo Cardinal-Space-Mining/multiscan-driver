@@ -46,6 +46,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <thread>
@@ -53,8 +54,11 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <tf2_ros/static_transform_broadcaster.hpp>
 
 #include <csm_metrics/stats.hpp>
 #include <csm_metrics/profiling.hpp>
@@ -69,8 +73,7 @@
 #include "sopas/cola_client.hpp"
 #include "sopas/sensor_session.hpp"
 #include "sopas/sensor_settings.hpp"
-
-#include "sick_scan_xd/softwarePLL.h"
+#include "time_sync.hpp"
 
 
 #define STATS_PUB_FREQUNCY      10U
@@ -91,6 +94,8 @@ class MultiscanNode : public rclcpp::Node
 {
     using ImuMsg = sensor_msgs::msg::Imu;
     using PointCloudMsg = sensor_msgs::msg::PointCloud2;
+    using DiagnosticArrayMsg = diagnostic_msgs::msg::DiagnosticArray;
+    using DiagnosticStatusMsg = diagnostic_msgs::msg::DiagnosticStatus;
     using ProcessStatsMsg = csm_metrics::msg::ProcessStats;
 
 public:
@@ -109,15 +114,27 @@ protected:
     void publishFrame(multiscan::FrameAssembler::Frame& frame);
     void reportStreamHealth();
     void runReceiver();
+    bool pollSensorStatus();
+    void updateDiagnosticsSnapshot(bool streaming);
+    void publishDiagnostics();
 
-    /* Sensor clock (us) -> host clock (ns) via the vendored software PLL, as
-     * the old parser did. Replaced by the time sync rewrite. */
-    uint64_t toHostTime(uint64_t sensor_us, uint64_t recv_ns);
+    /* host - sensor clock offset (ns) for a scan telegram, per time.source;
+     * every telegram also feeds the clock estimator. */
+    int64_t clockOffset(uint64_t transmit_us, uint64_t recv_ns);
 
 private:
     // the scanner can take a few seconds to start streaming after (re)start
     static constexpr double INITIAL_UDP_TIMEOUT_S = 5.;
     static constexpr int RECEIVE_POLL_MS = 20;
+    // IMU position relative to the optical origin (operating instructions)
+    static constexpr double IMU_OFFSET_M[3] = {-0.017, 0.0235, -0.030};
+
+    enum class TimeSource
+    {
+        Estimated,  // sensor clock mapped to the host clock (ClockEstimator)
+        Sensor,     // sensor clock as is (synchronised via NTP/PTP)
+        Receive,    // host receive time of each telegram
+    };
 
     struct
     {
@@ -142,10 +159,47 @@ private:
         // applied on every connect (never persisted) unless apply is false
         bool apply_sensor_settings = true;
         sopas::SensorSettings sensor;
+        TimeSource time_source = TimeSource::Estimated;
+        std::string imu_frame_id;
+        std::array<double, 3> imu_orientation_cov{};
+        std::array<double, 3> imu_angular_velocity_cov{};
+        std::array<double, 3> imu_linear_acceleration_cov{};
+        double status_period_s = 2.;
     } config;
+
+    /* What /diagnostics reports. Written by the receive thread, read by the
+     * diagnostics timer. */
+    struct DiagnosticsSnapshot
+    {
+        bool connected = false;
+        bool streaming = false;  // data arrived within udp_reset_timeout
+        uint64_t connects = 0;
+        std::string last_error;
+        sopas::DeviceInfo device;
+        std::string stream_host;
+        size_t settings_total = 0;
+        size_t settings_verified = 0;
+        std::vector<std::string> setting_problems;
+
+        bool have_status = false;
+        sopas::SensorStatus status;
+
+        multiscan::FrameAssembler::Stats stream;
+        uint64_t frames_published = 0;
+        uint64_t imu_published = 0;
+        uint32_t expected_mask = 0;
+
+        bool clock_valid = false;
+        int64_t clock_offset_ns = 0;
+        double clock_drift = 0.;
+        multiscan::ClockEstimator::Stats clock;
+    };
 
     SharedPub<PointCloudMsg> scan_pub;
     SharedPub<ImuMsg> imu_pub;
+    SharedPub<DiagnosticArrayMsg> diag_pub;
+    RclTimer diag_timer;
+    std::shared_ptr<tf2_ros::StaticTransformBroadcaster> imu_tf;
 
     std::vector<PointCloudMsg::_fields_type::value_type> scan_fields;
     std::unique_ptr<compact::ScanDecoder> decoder;
@@ -155,6 +209,16 @@ private:
 
     multiscan::UdpReceiver receiver;
     sopas::ColaClient cola;
+    multiscan::ClockEstimator clock;
+    sopas::SensorStatus last_status;
+    bool have_last_status = false;
+    uint64_t frames_published = 0;
+    uint64_t imu_published = 0;
+
+    std::mutex diag_mtx;
+    DiagnosticsSnapshot diag;           // guarded by diag_mtx
+    DiagnosticsSnapshot diag_previous;  // timer thread only
+    std::chrono::steady_clock::time_point diag_previous_time;
 
     std::thread recv_thread;
     std::atomic<bool> is_running = true;
@@ -256,6 +320,67 @@ MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
         this->config.publish_partial_frames,
         true);
 
+    {
+        std::string source = "estimated";
+        util::declare_param(
+            this,
+            "time.source",
+            source,
+            std::string{"estimated"});
+        if (source == "estimated")
+        {
+            this->config.time_source = TimeSource::Estimated;
+        }
+        else if (source == "sensor")
+        {
+            this->config.time_source = TimeSource::Sensor;
+        }
+        else if (source == "receive")
+        {
+            this->config.time_source = TimeSource::Receive;
+        }
+        else
+        {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: time.source must be estimated, sensor or receive "
+                "(got '%s'); using estimated.",
+                source.c_str());
+        }
+    }
+
+    util::declare_param(this, "imu.frame_id", this->config.imu_frame_id, "");
+    bool imu_publish_tf = true;
+    util::declare_param(this, "imu.publish_tf", imu_publish_tf, true);
+    {
+        auto cov = [this](const char* name, std::array<double, 3>& out)
+        {
+            std::vector<double> v{0., 0., 0.};
+            util::declare_param(this, name, v, std::vector<double>{0., 0., 0.});
+            if (v.size() == 3)
+            {
+                std::copy(v.begin(), v.end(), out.begin());
+            }
+            else
+            {
+                RCLCPP_ERROR(
+                    this->get_logger(),
+                    "[MULTISCAN DRIVER]: %s needs 3 values (x, y, z variances); using 0 (unknown).",
+                    name);
+            }
+        };
+        cov("imu.orientation_covariance", this->config.imu_orientation_cov);
+        cov("imu.angular_velocity_covariance",
+            this->config.imu_angular_velocity_cov);
+        cov("imu.linear_acceleration_covariance",
+            this->config.imu_linear_acceleration_cov);
+    }
+    util::declare_param(
+        this,
+        "diagnostics.status_period",
+        this->config.status_period_s,
+        2.);
+
     bool use_msgpack = false;
     util::declare_param(this, "use_msgpack", use_msgpack, false);
     if (use_msgpack)
@@ -267,6 +392,16 @@ MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
     }
 
     this->declareSensorSettings();
+
+    if (this->config.time_source == TimeSource::Sensor &&
+        this->config.sensor.time_sync.mode == sopas::TimeSyncMode::Off)
+    {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "[MULTISCAN DRIVER]: time.source is 'sensor' but sensor.time_sync.mode is "
+            "'off': the sensor clock counts from power-up, so stamps will not be "
+            "host time unless the sensor is synchronised some other way.");
+    }
 
     std::string layout_error;
     auto layout = multiscan::PointLayout::fromNames(
@@ -298,14 +433,43 @@ MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
         *this->decoder,
         multiscan::FrameAssembler::Config{
             .publish_partial_frames = this->config.publish_partial_frames},
-        [this](uint64_t sensor_us, uint64_t recv_ns)
-        { return this->toHostTime(sensor_us, recv_ns); });
+        [this](const compact::ScanInfo& info, uint64_t recv_ns)
+        { return this->clockOffset(info.transmit_time_us, recv_ns); });
 
     this->scan_pub = this->create_publisher<PointCloudMsg>(
         "lidar_scan",
         rclcpp::SensorDataQoS{});
     this->imu_pub =
         this->create_publisher<ImuMsg>("lidar_imu", rclcpp::SensorDataQoS{});
+
+    if (this->config.imu_frame_id.empty())
+    {
+        this->config.imu_frame_id = this->config.lidar_frame_id;
+    }
+    else if (
+        imu_publish_tf &&
+        this->config.imu_frame_id != this->config.lidar_frame_id)
+    {
+        geometry_msgs::msg::TransformStamped tf;
+        tf.header.stamp = this->now();
+        tf.header.frame_id = this->config.lidar_frame_id;
+        tf.child_frame_id = this->config.imu_frame_id;
+        tf.transform.translation.x = IMU_OFFSET_M[0];
+        tf.transform.translation.y = IMU_OFFSET_M[1];
+        tf.transform.translation.z = IMU_OFFSET_M[2];
+        tf.transform.rotation.w = 1.;  // IMU axes are the device axes
+        this->imu_tf =
+            std::make_shared<tf2_ros::StaticTransformBroadcaster>(*this);
+        this->imu_tf->sendTransform(tf);
+    }
+
+    this->diag_pub = this->create_publisher<DiagnosticArrayMsg>(
+        "/diagnostics",
+        rclcpp::SystemDefaultsQoS{});
+    this->diag_previous_time = std::chrono::steady_clock::now();
+    this->diag_timer = this->create_wall_timer(
+        std::chrono::seconds(1),
+        [this]() { this->publishDiagnostics(); });
 
 #if PUBLISH_PROCESS_METRICS
     this->proc_stats_pub = this->create_publisher<ProcessStatsMsg>(
@@ -487,6 +651,18 @@ void MultiscanNode::declareSensorSettings()
     c.warning = flag("sensor.contamination.warning", true);
     c.error = flag("sensor.contamination.error", true);
 
+    const std::string sync = text("sensor.time_sync.mode", "off");
+    if (auto v = sopas::timeSyncModeFromString(sync))
+    {
+        s.time_sync.mode = *v;
+    }
+    else
+    {
+        errors.push_back("sensor.time_sync.mode must be off, ntp or ptp");
+    }
+    s.time_sync.ntp_server = text("sensor.time_sync.ntp_server", "");
+    s.time_sync.ntp_update_s = integer("sensor.time_sync.ntp_update_s", 10);
+
     if (const std::string v = s.validate(); !v.empty())
     {
         errors.push_back(v);
@@ -522,12 +698,21 @@ bool MultiscanNode::initConnection()
             this->get_logger(),
             "[MULTISCAN DRIVER]: SOPAS connection failed: %s",
             err.c_str());
+        std::lock_guard l(this->diag_mtx);
+        this->diag.connected = false;
+        this->diag.last_error = "SOPAS connection failed: " + err;
         return false;
     }
 
     const std::string host = this->config.driver_hostname.empty()
                                  ? this->cola.localAddress()
                                  : this->config.driver_hostname;
+    sopas::SensorSettings settings = this->config.sensor;
+    if (settings.time_sync.mode == sopas::TimeSyncMode::Ntp &&
+        settings.time_sync.ntp_server.empty())
+    {
+        settings.time_sync.ntp_server = host;  // this host serves NTP
+    }
     sopas::SensorSession session(
         this->cola,
         this->config.sopas_password,
@@ -538,9 +723,37 @@ bool MultiscanNode::initConnection()
          static_cast<uint16_t>(this->config.lidar_udp_port),
          static_cast<uint16_t>(this->config.imu_udp_port),
          true},
-        this->config.sensor,
+        settings,
         this->config.apply_sensor_settings,
         report);
+
+    {
+        std::lock_guard l(this->diag_mtx);
+        this->diag.connected = this->cola.connected();
+        this->diag.device = report.device;
+        this->diag.stream_host = host;
+        this->diag.settings_total = report.settings.size();
+        this->diag.settings_verified = 0;
+        this->diag.setting_problems.clear();
+        for (const auto& st : report.settings)
+        {
+            this->diag.settings_verified += st.verified;
+            if (!st.problem.empty())
+            {
+                this->diag.setting_problems.push_back(
+                    st.name + ": " + st.problem);
+            }
+        }
+        if (ok)
+        {
+            this->diag.connects++;
+            this->diag.last_error.clear();
+        }
+        else
+        {
+            this->diag.last_error = "sensor start failed: " + report.error;
+        }
+    }
 
     RCLCPP_INFO(
         this->get_logger(),
@@ -604,22 +817,20 @@ void MultiscanNode::stopStreaming()
     this->cola.disconnect();
 }
 
-uint64_t MultiscanNode::toHostTime(uint64_t sensor_us, uint64_t recv_ns)
+int64_t MultiscanNode::clockOffset(uint64_t transmit_us, uint64_t recv_ns)
 {
-    const uint64_t sys_ns = recv_ns;
-    const uint32_t curtick = static_cast<uint32_t>(sensor_us & 0xFFFFFFFF);
-    SoftwarePLL& pll = SoftwarePLL::instance();
-    pll.updatePLL(
-        static_cast<uint32_t>(sys_ns / 1000000000),
-        static_cast<uint32_t>(sys_ns % 1000000000),
-        curtick);
-    uint32_t sec = static_cast<uint32_t>(sensor_us / 1000000);
-    uint32_t nsec = static_cast<uint32_t>(1000 * (sensor_us % 1000000));
-    if (pll.IsInitialized())
+    this->clock.add(transmit_us, recv_ns);
+    switch (this->config.time_source)
     {
-        pll.getCorrectedTimeStamp(sec, nsec, curtick);
+        case TimeSource::Sensor:
+            return 0;
+        case TimeSource::Receive:
+            return static_cast<int64_t>(recv_ns) -
+                   static_cast<int64_t>(transmit_us * 1000);
+        case TimeSource::Estimated:
+        default:
+            return this->clock.offsetNs(recv_ns);
     }
-    return static_cast<uint64_t>(sec) * 1000000000ULL + nsec;
 }
 
 void MultiscanNode::handleDatagram(
@@ -673,12 +884,33 @@ void MultiscanNode::handleImu(
             compact::toString(err));
         return;
     }
-    const uint64_t stamp_ns = this->toHostTime(s.time_us, recv_ns);
+    // IMU telegrams carry no transmit time, only the sample time: they use
+    // the offset estimated from the scan telegrams
+    uint64_t stamp_ns = recv_ns;
+    if (this->config.time_source == TimeSource::Sensor)
+    {
+        stamp_ns = s.time_us * 1000;
+    }
+    else if (
+        this->config.time_source == TimeSource::Estimated &&
+        this->clock.valid())
+    {
+        stamp_ns = this->clock.toHostNs(s.time_us, recv_ns);
+    }
 
     auto msg = std::make_unique<ImuMsg>();
     msg->header.stamp.sec = static_cast<int32_t>(stamp_ns / 1000000000ULL);
     msg->header.stamp.nanosec = static_cast<uint32_t>(stamp_ns % 1000000000ULL);
-    msg->header.frame_id = this->config.lidar_frame_id;
+    msg->header.frame_id = this->config.imu_frame_id;
+    for (int i = 0; i < 3; i++)
+    {
+        msg->orientation_covariance[i * 4] =
+            this->config.imu_orientation_cov[i];
+        msg->angular_velocity_covariance[i * 4] =
+            this->config.imu_angular_velocity_cov[i];
+        msg->linear_acceleration_covariance[i * 4] =
+            this->config.imu_linear_acceleration_cov[i];
+    }
     msg->angular_velocity.x = s.angular_velocity[0];
     msg->angular_velocity.y = s.angular_velocity[1];
     msg->angular_velocity.z = s.angular_velocity[2];
@@ -690,6 +922,7 @@ void MultiscanNode::handleImu(
     msg->orientation.y = s.orientation[2];
     msg->orientation.z = s.orientation[3];
     this->imu_pub->publish(std::move(msg));
+    this->imu_published++;
 }
 
 void MultiscanNode::publishFrame(multiscan::FrameAssembler::Frame& frame)
@@ -711,6 +944,7 @@ void MultiscanNode::publishFrame(multiscan::FrameAssembler::Frame& frame)
         static_cast<uint32_t>(frame.stamp_ns % 1000000000ULL);
 
     this->scan_pub->publish(std::move(scan));
+    this->frames_published++;
 }
 
 void MultiscanNode::reportStreamHealth()
@@ -745,6 +979,365 @@ void MultiscanNode::reportStreamHealth()
             static_cast<unsigned long>(dup_late));
     }
     prev = now;
+}
+
+bool MultiscanNode::pollSensorStatus()
+{
+    sopas::SensorSession session(
+        this->cola,
+        this->config.sopas_password,
+        static_cast<int>(this->config.sopas_read_timeout * 1e3));
+    sopas::SensorStatus st;
+    std::string err;
+    if (!session.readStatus(st, err))
+    {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "[MULTISCAN DRIVER]: Reading the sensor status failed: %s",
+            err.c_str());
+        return false;
+    }
+
+    // log changes (and anything abnormal on the first read)
+    const sopas::SensorStatus& prev = this->last_status;
+    const bool first = !this->have_last_status;
+    constexpr int NORMAL =
+        static_cast<int>(sopas::SensorStatus::DeviceState::Normal);
+    if (st.have_state && (first ? st.state != NORMAL : st.state != prev.state))
+    {
+        if (st.state == NORMAL)
+        {
+            RCLCPP_INFO(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: Sensor state back to normal operation.");
+        }
+        else
+        {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: Sensor state: %s (%d).",
+                sopas::deviceStateName(st.state),
+                st.state);
+        }
+    }
+    if (st.have_contamination &&
+        (first ? (st.contamination_warning || st.contamination_error)
+               : (st.contamination_warning != prev.contamination_warning ||
+                  st.contamination_error != prev.contamination_error)))
+    {
+        if (st.contamination_error)
+        {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: Optics cover contamination ERROR: clean the sensor window.");
+        }
+        else if (st.contamination_warning)
+        {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: Optics cover contamination warning.");
+        }
+        else
+        {
+            RCLCPP_INFO(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: Optics cover contamination cleared.");
+        }
+    }
+    this->last_status = st;
+    this->have_last_status = true;
+
+    std::lock_guard l(this->diag_mtx);
+    this->diag.have_status = true;
+    this->diag.status = st;
+    return true;
+}
+
+void MultiscanNode::updateDiagnosticsSnapshot(bool streaming)
+{
+    timespec rt;
+    clock_gettime(CLOCK_REALTIME, &rt);
+    const uint64_t now_ns = static_cast<uint64_t>(rt.tv_sec) * 1000000000ULL +
+                            static_cast<uint64_t>(rt.tv_nsec);
+
+    std::lock_guard l(this->diag_mtx);
+    this->diag.connected = this->cola.connected();
+    this->diag.streaming = streaming;
+    if (streaming)
+    {
+        this->diag.last_error.clear();
+    }
+    this->diag.stream = this->assembler->stats();
+    this->diag.expected_mask = this->assembler->expectedMask();
+    this->diag.frames_published = this->frames_published;
+    this->diag.imu_published = this->imu_published;
+    this->diag.clock_valid = this->clock.valid();
+    this->diag.clock_offset_ns = this->clock.offsetNs(now_ns);
+    this->diag.clock_drift = this->clock.drift();
+    this->diag.clock = this->clock.stats();
+}
+
+void MultiscanNode::publishDiagnostics()
+{
+    using Status = DiagnosticStatusMsg;
+    DiagnosticsSnapshot d;
+    {
+        std::lock_guard l(this->diag_mtx);
+        d = this->diag;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const double dt = std::max(
+        1e-3,
+        std::chrono::duration<double>(now - this->diag_previous_time).count());
+    const DiagnosticsSnapshot& p = this->diag_previous;
+
+    const std::string hw = d.device.serial.empty()
+                               ? this->config.lidar_hostname
+                               : d.device.type + " " + d.device.serial;
+    auto make = [&hw](const char* name, uint8_t level, std::string message)
+    {
+        Status st;
+        st.name = std::string("multiscan_driver: ") + name;
+        st.hardware_id = hw;
+        st.level = level;
+        st.message = std::move(message);
+        return st;
+    };
+    auto kv = [](Status& st, const std::string& key, const std::string& value)
+    {
+        st.values.push_back(
+            diagnostic_msgs::msg::KeyValue{}.set__key(key).set__value(value));
+    };
+    auto fmt = [](const char* f, double v)
+    {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), f, v);
+        return std::string(buf);
+    };
+
+    auto msg = std::make_unique<DiagnosticArrayMsg>();
+    msg->header.stamp = this->now();
+
+    // --- connection
+    {
+        Status st =
+            d.streaming ? make("Connection", Status::OK, "streaming")
+            : d.connected
+                ? make("Connection", Status::WARN, "connected, no data")
+                : make(
+                      "Connection",
+                      Status::ERROR,
+                      d.last_error.empty() ? "not connected" : d.last_error);
+        kv(st, "Sensor", this->config.lidar_hostname);
+        kv(st, "Stream destination", d.stream_host);
+        kv(st, "Device", d.device.type);
+        kv(st, "Serial", d.device.serial);
+        kv(st, "Firmware", d.device.firmware);
+        kv(st, "Connects", std::to_string(d.connects));
+        if (!d.last_error.empty())
+        {
+            kv(st, "Last error", d.last_error);
+        }
+        msg->status.push_back(std::move(st));
+    }
+
+    // --- device state and temperature
+    {
+        Status st = make("Sensor", Status::STALE, "no status read yet");
+        if (d.have_status && d.status.have_state)
+        {
+            using DS = sopas::SensorStatus::DeviceState;
+            const int s = d.status.state;
+            st.level = s == static_cast<int>(DS::Normal) ? Status::OK
+                       : (s == static_cast<int>(DS::RecoverableError) ||
+                          s == static_cast<int>(DS::FatalError))
+                           ? Status::ERROR
+                           : Status::WARN;
+            st.message = sopas::deviceStateName(s);
+            kv(st,
+               "Device state",
+               std::to_string(s) + " (" + sopas::deviceStateName(s) + ")");
+        }
+        if (d.have_status && d.status.have_temperature)
+        {
+            kv(st,
+               "Internal temperature [C]",
+               fmt("%.1f", d.status.temperature_c));
+        }
+        msg->status.push_back(std::move(st));
+    }
+
+    // --- contamination
+    {
+        const bool monitoring = this->config.sensor.contamination.strategy !=
+                                sopas::ContaminationStrategy::Inactive;
+        Status st = make("Contamination", Status::STALE, "no status read yet");
+        if (d.have_status && d.status.have_contamination)
+        {
+            if (d.status.contamination_error)
+            {
+                st.level = Status::ERROR;
+                st.message = "contaminated (error): clean the optics cover";
+            }
+            else if (d.status.contamination_warning)
+            {
+                st.level = Status::WARN;
+                st.message = "contaminated (warning)";
+            }
+            else
+            {
+                st.level = Status::OK;
+                st.message = monitoring ? "clean" : "monitoring inactive";
+            }
+            kv(st,
+               "Warning",
+               d.status.contamination_warning ? "true" : "false");
+            kv(st, "Error", d.status.contamination_error ? "true" : "false");
+        }
+        if (d.have_status && d.status.have_sectors)
+        {
+            for (size_t i = 0; i < d.status.sectors.size(); i++)
+            {
+                kv(st,
+                   "Sector " + std::to_string(i + 1),
+                   sopas::sectorName(d.status.sectors[i]));
+            }
+        }
+        msg->status.push_back(std::move(st));
+    }
+
+    // --- stream (rates over the last period)
+    {
+        const double fps = (d.frames_published - p.frames_published) / dt;
+        const uint64_t lost = d.stream.telegrams_lost - p.stream.telegrams_lost;
+        const uint64_t partial =
+            d.stream.frames_partial - p.stream.frames_partial;
+        const uint64_t discarded =
+            d.stream.frames_discarded - p.stream.frames_discarded;
+        const uint64_t errors = d.stream.decode_errors - p.stream.decode_errors;
+        Status st = make("Stream", Status::OK, fmt("%.1f frames/s", fps));
+        if (!d.streaming)
+        {
+            st.level = Status::ERROR;
+            st.message = "no data";
+        }
+        else if (lost || partial || discarded || errors)
+        {
+            st.level = Status::WARN;
+            st.message += ", degraded";
+        }
+        kv(st, "Frames/s", fmt("%.1f", fps));
+        kv(st,
+           "IMU samples/s",
+           fmt("%.1f", (d.imu_published - p.imu_published) / dt));
+        kv(st,
+           "Segments per frame",
+           std::to_string(std::popcount(d.expected_mask)));
+        kv(st, "Telegrams lost (last period)", std::to_string(lost));
+        kv(st, "Partial frames (last period)", std::to_string(partial));
+        kv(st, "Discarded frames (last period)", std::to_string(discarded));
+        kv(st, "Decode errors (last period)", std::to_string(errors));
+        kv(st, "Frames published", std::to_string(d.frames_published));
+        kv(st, "Frames complete", std::to_string(d.stream.frames_complete));
+        kv(st, "Frames partial", std::to_string(d.stream.frames_partial));
+        kv(st, "Frames missed", std::to_string(d.stream.frames_missed));
+        kv(st, "Telegrams lost", std::to_string(d.stream.telegrams_lost));
+        kv(st,
+           "Duplicate/late segments",
+           std::to_string(
+               d.stream.segments_duplicate + d.stream.segments_late));
+        kv(st, "Decode errors", std::to_string(d.stream.decode_errors));
+        kv(st,
+           "Truncated datagrams",
+           std::to_string(this->receiver.truncatedDatagrams()));
+        msg->status.push_back(std::move(st));
+    }
+
+    // --- time
+    {
+        static constexpr const char* SOURCES[] = {
+            "estimated",
+            "sensor",
+            "receive"};
+        static constexpr const char* SYNC[] = {"off", "ntp", "?", "ptp"};
+        Status st = make(
+            "Time",
+            Status::OK,
+            SOURCES[static_cast<int>(this->config.time_source)]);
+        const double offset_s = d.clock_offset_ns * 1e-9;
+        if (!d.clock_valid)
+        {
+            st.level = Status::STALE;
+            st.message += ", no data yet";
+        }
+        else if (
+            this->config.time_source == TimeSource::Sensor &&
+            std::abs(d.clock_offset_ns) > 50'000'000)
+        {
+            st.level = Status::WARN;
+            st.message += ": sensor clock is " + fmt("%.3f", offset_s) +
+                          " s behind the host; is it synchronised?";
+        }
+        else if (
+            d.clock.restarts != p.clock.restarts ||
+            d.clock.steps != p.clock.steps)
+        {
+            st.level = Status::WARN;
+            st.message += ", clock jumped";
+        }
+        kv(st, "Source", SOURCES[static_cast<int>(this->config.time_source)]);
+        kv(st,
+           "Sensor time sync",
+           SYNC[static_cast<int>(this->config.sensor.time_sync.mode)]);
+        kv(st, "Host - sensor offset [s]", fmt("%.6f", offset_s));
+        kv(st, "Drift [ppm]", fmt("%.2f", d.clock_drift * 1e6));
+        kv(st,
+           "Delay above estimate, min [us]",
+           fmt("%.0f", d.clock.block_min_delay_ns * 1e-3));
+        kv(st,
+           "Delay above estimate, max [us]",
+           fmt("%.0f", d.clock.block_max_delay_ns * 1e-3));
+        kv(st, "Clock restarts", std::to_string(d.clock.restarts));
+        kv(st, "Clock steps", std::to_string(d.clock.steps));
+        msg->status.push_back(std::move(st));
+    }
+
+    // --- configuration
+    {
+        Status st = make("Configuration", Status::OK, "");
+        if (d.settings_total == 0)
+        {
+            st.level = Status::STALE;
+            st.message = "not checked yet";
+        }
+        else
+        {
+            st.message = std::to_string(d.settings_verified) + " of " +
+                         std::to_string(d.settings_total) +
+                         " settings verified";
+            if (!d.setting_problems.empty())
+            {
+                st.level = Status::WARN;
+                st.message += ", " + std::to_string(d.setting_problems.size()) +
+                              " problems";
+            }
+        }
+        kv(st,
+           "Mode",
+           this->config.apply_sensor_settings ? "apply" : "compare only");
+        for (const auto& pr : d.setting_problems)
+        {
+            const size_t colon = pr.find(':');
+            kv(st,
+               pr.substr(0, colon),
+               colon == std::string::npos ? "" : pr.substr(colon + 2));
+        }
+        msg->status.push_back(std::move(st));
+    }
+
+    this->diag_pub->publish(std::move(msg));
+    this->diag_previous = std::move(d);
+    this->diag_previous_time = now;
 }
 
 void MultiscanNode::runReceiver()
@@ -811,6 +1404,8 @@ void MultiscanNode::runReceiver()
             auto last_udp_recv_time = std::chrono::steady_clock::now();
             auto last_report_time = last_udp_recv_time;
             auto last_sopas_check = last_udp_recv_time;
+            auto last_status_poll =
+                last_udp_recv_time - std::chrono::hours(1);  // poll at once
             this->assembler->reset();
 
             while (this->is_running && this->cola.connected())
@@ -857,7 +1452,22 @@ void MultiscanNode::runReceiver()
                 {
                     // handles events and notices a closed connection
                     this->cola.poll(0);
+                    this->updateDiagnosticsSnapshot(
+                        received_data &&
+                        std::chrono::duration<double>(now - last_udp_recv_time)
+                                .count() <
+                            this->config.udp_dropout_reset_thresh);
                     last_sopas_check = now;
+                }
+                if (this->config.status_period_s > 0. &&
+                    std::chrono::duration<double>(now - last_status_poll)
+                            .count() >= this->config.status_period_s)
+                {
+                    if (!this->pollSensorStatus())
+                    {
+                        break;
+                    }
+                    last_status_poll = now;
                 }
 
                 if (n > 0)
@@ -898,6 +1508,16 @@ void MultiscanNode::runReceiver()
 
         const bool sopas_lost = !this->cola.connected();
         this->stopStreaming();
+        {
+            std::lock_guard l(this->diag_mtx);
+            this->diag.connected = false;
+            this->diag.streaming = false;
+            if (this->diag.last_error.empty())
+            {
+                this->diag.last_error =
+                    sopas_lost ? "lost the SOPAS connection" : "no lidar data";
+            }
+        }
 
         if (this->is_running)
         {
