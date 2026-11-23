@@ -1,7 +1,11 @@
-/*  Timing of the old data path (oracle: vendored parser + driver packing) vs the
- *  new decoder on the captured fixtures. Not a test; run it on the target:
+/*  Timing of the decoder and frame assembler on the captured fixtures. Not a
+ *  test; run it on the target:
  *
  *    build/multiscan_driver/bench_decoder [iterations]
+ *
+ *  Reference (Ryzen, 12 cores, before the vendored parser was removed), per
+ *  segment: old driver 52 us (live, 3456 B) / 180 us (all layers, 3 echoes,
+ *  14160 B); this code 8.2 / 19.7 us including assembly, 6.9 / 16.4 us decode.
  */
 #include <chrono>
 #include <cstdio>
@@ -10,7 +14,6 @@
 
 #include "compact/decoder.hpp"
 #include "frame_assembler.hpp"
-#include "oracle/legacy_pipeline.hpp"
 #include "support/mscap.hpp"
 
 namespace compact = multiscan::compact;
@@ -33,26 +36,10 @@ int main(int argc, char** argv)
         }
         const double n = static_cast<double>(scans.size()) * iters;
 
-        auto t0 = Clock::now();
-        size_t clouds_old = 0;
-        for (int i = 0; i < iters; i++)
-        {
-            ms_test::legacy::Pipeline oracle;
-            for (const auto& d : scans)
-            {
-                oracle.feed(d.data, d.recv_time_ns);
-            }
-            clouds_old += oracle.clouds.size();
-        }
-        const double us_old =
-            std::chrono::duration<double, std::micro>(Clock::now() - t0)
-                .count() /
-            n;
-
         compact::ScanDecoder dec(multiscan::PointLayout::all());
         std::vector<multiscan::FrameAssembler::Frame> frames;
         size_t clouds_new = 0;
-        t0 = Clock::now();
+        auto t0 = Clock::now();
         for (int i = 0; i < iters; i++)
         {
             // a fresh assembler per pass: the captures' frame numbers repeat
@@ -98,16 +85,12 @@ int main(int argc, char** argv)
             n;
         std::printf("%-26s decoder alone %6.2f us/segment\n", "", us_dec);
         std::printf(
-            "%-26s %5zu B/segment: old %7.2f us/segment, new %6.2f us/segment (%.1fx), "
-            "%.3f -> %.3f ms per 20 Hz frame (%zu/%zu clouds)\n",
+            "%-26s %5zu B/segment: %6.2f us/segment, %.3f ms per 20 Hz frame "
+            "(%zu clouds)\n",
             file,
             scans[0].data.size(),
-            us_old,
             us_new,
-            us_old / us_new,
-            us_old * 12 / 1000,
             us_new * 12 / 1000,
-            clouds_old,
             clouds_new);
     }
 }

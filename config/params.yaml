@@ -79,11 +79,13 @@
         warning: true
         error: true
       time_sync:                # sensor clock synchronisation (TSCRole)
-        # off | ntp | ptp (ptp needs a PTP master, e.g. ptp4l on this host).
-        # Measured with chrony on the host (fw 2.3): ntp locks within a second
-        # but the clock stays 1-4 ms off and is corrected in ~1-2 ms steps
-        # every update; with time.source "estimated", "off" (a smoothly
-        # drifting clock) gives cleaner stamps.
+        # off | ntp | ptp. Measured on fw 2.3 (keep "off"; time.source
+        # "estimated" maps the free-running clock to host time instead):
+        #  - ntp (chrony on the host): locks within a second, but the clock
+        #    stays 1-4 ms off and is corrected in ~1-2 ms steps every update.
+        #  - ptp (linuxptp master, UDP, E2E, v2.0 and v2.1): the sensor sends
+        #    no PTP messages and never corrects its time (a 10 s offset
+        #    stayed for minutes); at most its frequency seemed to follow.
         mode: "off"
         ntp_server: ""          # IPv4; "" = this host (needs an NTP server, e.g. chrony with 'allow')
         ntp_update_s: 10        # 1..3600

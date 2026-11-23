@@ -1,10 +1,10 @@
 /*  Independent reader/writer for the multiScan "Compact" UDP format (telegram
  *  types 1 and 2), written from the data format description in the
  *  multiScan136 operating instructions (8027119, section 12.4.1.4), not from
- *  the vendored sick_scan_xd code. Tests use it to
+ *  the driver's decoder. Tests use it to
  *    - build synthetic segments for any sensor configuration, and
  *    - read captured packets into plain structs, as an executable statement of
- *      what every decoder (vendored or new) has to produce.
+ *      what the decoder has to produce.
  */
 #pragma once
 

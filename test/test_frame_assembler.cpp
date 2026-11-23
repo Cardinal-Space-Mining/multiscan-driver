@@ -1,8 +1,10 @@
 /*  Frame assembly by frame number (src/frame_assembler.cpp).
  *
- *  The first tests replace the oracle's LegacyBug_* behaviour: a narrowed
- *  output range publishes again, and a dropped datagram yields one partial
- *  frame instead of shifting every later frame.
+ *  The first tests cover two defects of the old driver (vendored sick_scan_xd
+ *  pipeline): with a narrowed output range it never published, and a dropped
+ *  datagram shifted the frame boundaries of every later frame. Now a narrowed
+ *  range publishes every frame, and a dropped datagram yields one partial
+ *  frame.
  */
 #include <gtest/gtest.h>
 
@@ -106,7 +108,7 @@ std::vector<uint32_t> range(uint32_t a, uint32_t b)
 }  // namespace
 
 
-// --- Fixes for the legacy defects ---------------------------------------------------
+// --- Fixes for the old driver's defects ---------------------------------------------------
 
 TEST(FrameAssembler, NarrowOutputRangePublishesEveryFrame)
 {

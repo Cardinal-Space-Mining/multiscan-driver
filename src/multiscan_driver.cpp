@@ -271,15 +271,6 @@ MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
         "sopas_password",
         this->config.sopas_password,
         "F4724744");
-    bool use_cola_binary = false;
-    util::declare_param(this, "use_cola_binary", use_cola_binary, false);
-    if (use_cola_binary)
-    {
-        RCLCPP_WARN(
-            this->get_logger(),
-            "[MULTISCAN DRIVER]: CoLa B is no longer supported; using CoLa A on "
-            "sopas_tcp_port (2111 on firmware 2.3).");
-    }
     util::declare_param(
         this,
         "udp_reset_timeout",
@@ -380,16 +371,6 @@ MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
         "diagnostics.status_period",
         this->config.status_period_s,
         2.);
-
-    bool use_msgpack = false;
-    util::declare_param(this, "use_msgpack", use_msgpack, false);
-    if (use_msgpack)
-    {
-        RCLCPP_WARN(
-            this->get_logger(),
-            "[MULTISCAN DRIVER]: MSGPACK is no longer supported (it never worked in this "
-            "driver); using the Compact format.");
-    }
 
     this->declareSensorSettings();
 

@@ -1,6 +1,7 @@
-/*  The new Compact decoder (src/compact/) against the oracle and the spec:
- *    - published clouds are byte-identical to the old driver's (oracle) on
- *      every capture and every synthetic configuration
+/*  The Compact decoder (src/compact/) against the old driver and the spec:
+ *    - published clouds are byte-identical to what the old driver (vendored
+ *      sick_scan_xd parser) published, on every capture and synthetic
+ *      configuration (test/data/golden_clouds.txt)
  *    - every segment matches the executable spec exactly
  *    - field subsets are projections of the full layout, with the offsets the
  *      old compile-time configurations produced
@@ -9,18 +10,20 @@
  */
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <map>
 #include <random>
+#include <sstream>
 
 #include "compact/decoder.hpp"
 #include "compact/point_layout.hpp"
 #include "frame_assembler.hpp"
-#include "oracle/legacy_pipeline.hpp"
 #include "support/compact_packet.hpp"
 #include "support/expected_points.hpp"
 #include "support/mscap.hpp"
 
-#include "point_fields.hpp"
 
 using namespace ms_test;
 using multiscan::Field;
@@ -69,29 +72,78 @@ public:
     size_t errors = 0;
 };
 
-void expectSameClouds(
-    const legacy::Pipeline& oracle,
-    const NewPipeline& mine,
-    const std::string& name)
+/* The clouds the old driver (vendored sick_scan_xd parser + driver packing)
+ * published for the same input, recorded as size and CRC-32 per cloud in
+ * test/data/golden_clouds.txt while that code was still here to compare
+ * with. MS_UPDATE_GOLDEN=1 rewrites the file from the current decoder: only
+ * for intentional output changes. */
+class Golden
 {
-    ASSERT_EQ(mine.clouds.size(), oracle.clouds.size()) << name;
-    ASSERT_GT(mine.clouds.size(), 0u) << name;
-    for (size_t c = 0; c < mine.clouds.size(); c++)
+public:
+    Golden() : path(fixture("golden_clouds.txt"))
     {
-        const auto& a = oracle.clouds[c].data;
-        const auto& b = mine.clouds[c];
-        ASSERT_EQ(b.size(), a.size()) << name << " cloud " << c;
-        if (std::memcmp(a.data(), b.data(), a.size()) != 0)
+        update = std::getenv("MS_UPDATE_GOLDEN") != nullptr;
+        if (update)
         {
-            size_t i = 0;
-            while (a[i] == b[i])
+            return;
+        }
+        std::ifstream f(path);
+        std::string line;
+        while (std::getline(f, line))
+        {
+            const size_t tab = line.find('\t');
+            if (tab != std::string::npos && line[0] != '#')
             {
-                i++;
+                entries[line.substr(0, tab)] = line.substr(tab + 1);
             }
-            FAIL() << name << " cloud " << c << ": first differing byte " << i
-                   << " (point " << i / 52 << ", byte " << i % 52 << ")";
         }
     }
+    ~Golden()
+    {
+        if (!update)
+        {
+            return;
+        }
+        std::ofstream f(path);
+        f << "# Clouds the old driver published (cloud count, then bytes:crc32 per\n"
+             "# cloud), checked by test_decoder. See Golden in test_decoder.cpp.\n";
+        for (const auto& [k, v] : entries)
+        {
+            f << k << '\t' << v << '\n';
+        }
+    }
+
+    void check(
+        const std::string& name,
+        const std::vector<std::vector<uint8_t>>& clouds)
+    {
+        std::ostringstream o;
+        o << clouds.size();
+        for (const auto& c : clouds)
+        {
+            o << ' ' << c.size() << ':' << std::hex
+              << ::crc32(0L, c.data(), static_cast<uInt>(c.size())) << std::dec;
+        }
+        if (update)
+        {
+            entries[name] = o.str();
+            return;
+        }
+        ASSERT_TRUE(entries.count(name)) << "no golden entry for " << name;
+        EXPECT_GT(clouds.size(), 0u) << name;
+        EXPECT_EQ(o.str(), entries[name]) << name;
+    }
+
+private:
+    std::string path;
+    bool update = false;
+    std::map<std::string, std::string> entries;
+};
+
+Golden& golden()
+{
+    static Golden g;  // written at exit when updating
+    return g;
 }
 
 std::vector<uint8_t> withFixedCrc(std::vector<uint8_t> b)
@@ -107,7 +159,7 @@ std::vector<uint8_t> withFixedCrc(std::vector<uint8_t> b)
 
 // --- Equivalence with the old driver -------------------------------------------
 
-TEST(Decoder, ByteIdenticalToOracleOnCaptures)
+TEST(Decoder, ByteIdenticalToOldDriverOnCaptures)
 {
     struct Case
     {
@@ -122,22 +174,19 @@ TEST(Decoder, ByteIdenticalToOracleOnCaptures)
              Case{"all_layers_3echo.mscap.gz", 3}
     })
     {
-        legacy::Pipeline oracle(static_cast<int>(c.echo));
         NewPipeline mine(c.echo);
         for (const auto& d : readCapture(fixture(c.file)))
         {
-            oracle.feed(d.data, d.recv_time_ns);
             mine.feed(d.data);
         }
         EXPECT_EQ(mine.errors, 0u);
-        expectSameClouds(
-            oracle,
-            mine,
-            std::string(c.file) + " echo " + std::to_string(c.echo));
+        golden().check(
+            std::string(c.file) + " echo " + std::to_string(c.echo),
+            mine.clouds);
     }
 }
 
-TEST(Decoder, ByteIdenticalToOracleOnSyntheticConfigurations)
+TEST(Decoder, ByteIdenticalToOldDriverOnSyntheticConfigurations)
 {
     std::vector<std::pair<std::string, SyntheticConfig>> cfgs;
     cfgs.emplace_back("live", SyntheticConfig::live());
@@ -208,21 +257,16 @@ TEST(Decoder, ByteIdenticalToOracleOnSyntheticConfigurations)
     {
         for (uint32_t echo : {1u, 2u, 3u, 0u})
         {
-            legacy::Pipeline oracle(static_cast<int>(echo));
             NewPipeline mine(echo);
             for (uint64_t frame = 3; frame < 6; frame++)
             {
                 for (uint32_t seg = 0; seg < 12; seg++)
                 {
                     const auto bytes = serialize(makeSegment(cfg, seg, frame));
-                    oracle.feed(bytes, 0);
                     mine.feed(bytes);
                 }
             }
-            expectSameClouds(
-                oracle,
-                mine,
-                name + " echo " + std::to_string(echo));
+            golden().check(name + " echo " + std::to_string(echo), mine.clouds);
         }
     }
 }
@@ -357,17 +401,13 @@ TEST(PointLayout, AllFieldsMatchesDriverDefault)
 TEST(PointLayout, SubsetsMatchOldCompileTimeConfigurations)
 {
     std::string err;
-    // MS_POINT_FIELD_ENABLE_XYZTR
+    // MS_POINT_FIELD_ENABLE_XYZTR: 24 bytes, time at 12 (old point_fields.hpp)
     auto xyztr =
         PointLayout::fromNames({"x", "y", "z", "tl", "th", "reflective"}, err);
     ASSERT_TRUE(xyztr);
-    EXPECT_EQ(
-        xyztr->pointStep(),
-        COMPUTE_NUM_POINT_FIELDS(MS_POINT_FIELD_ENABLE_XYZTR) * 4u);
-    EXPECT_EQ(
-        xyztr->offset(Field::Time),
-        COMPUTE_NUM_CONTIGUOUS_POINT_FIELDS(MS_POINT_FIELD_ENABLE_XYZTR) * 4);
-    // MS_POINT_FIELD_ENABLE_XYZPTR
+    EXPECT_EQ(xyztr->pointStep(), 24u);
+    EXPECT_EQ(xyztr->offset(Field::Time), 12);
+    // MS_POINT_FIELD_ENABLE_XYZPTR: 40 bytes, time at 28
     auto xyzptr = PointLayout::fromNames(
         {"reflective",
          "x",
@@ -381,12 +421,8 @@ TEST(PointLayout, SubsetsMatchOldCompileTimeConfigurations)
          "th"},
         err);
     ASSERT_TRUE(xyzptr);
-    EXPECT_EQ(
-        xyzptr->pointStep(),
-        COMPUTE_NUM_POINT_FIELDS(MS_POINT_FIELD_ENABLE_XYZPTR) * 4u);
-    EXPECT_EQ(
-        xyzptr->offset(Field::Time),
-        COMPUTE_NUM_CONTIGUOUS_POINT_FIELDS(MS_POINT_FIELD_ENABLE_XYZPTR) * 4);
+    EXPECT_EQ(xyzptr->pointStep(), 40u);
+    EXPECT_EQ(xyzptr->offset(Field::Time), 28);
     EXPECT_EQ(
         xyzptr->offset(Field::Reflective),
         xyzptr->offset(Field::Time) + 8);

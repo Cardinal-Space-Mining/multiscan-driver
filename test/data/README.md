@@ -14,3 +14,10 @@ arrived on port 2115 and IMU data on port 2116.
 
 All captures use the Compact format (`ScanDataFormat 2`) with
 `ScanDataPreformatting 1`, sent over UDP.
+
+Other files:
+
+| File | Contents |
+|---|---|
+| `sopas_transcript_fw2.3.txt` | CoLa A requests and replies recorded from the same sensor (settings, status, time sync); the fake sensor in `test/support/fake_sensor.hpp` starts from its values |
+| `golden_clouds.txt` | Size and CRC-32 of every cloud the old sick_scan_xd-based driver published for the captures and the synthetic configurations in `test_decoder.cpp`, recorded before that code was removed. Regenerate only for intentional output changes: `MS_UPDATE_GOLDEN=1 build/multiscan_driver/test_decoder` |

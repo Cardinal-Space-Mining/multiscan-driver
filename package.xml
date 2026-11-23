@@ -17,6 +17,8 @@
   <depend>csm_metrics</depend>
   <depend>csm_utils</depend>
   <depend>zlib</depend>
+  <!-- include/multiscan_driver/multiscan_spec.hpp (header for consumers) -->
+  <build_export_depend>eigen</build_export_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>
