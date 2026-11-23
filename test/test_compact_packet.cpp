@@ -20,7 +20,7 @@ constexpr uint16_t SCAN_PORT = 2115;
 constexpr uint16_t IMU_PORT = 2116;
 
 const char* const FIXTURES[] = {
-    "live_1echo.mscap.gz",        // layers 6+14 filtered, last echo (team default)
+    "live_1echo.mscap.gz",  // layers 6+14 filtered, last echo (team default)
     "all_layers_3echo.mscap.gz",  // all 16 layers, all echoes
     "range_pm10.mscap.gz",        // LMPoutputRange -10..+10 deg
     "interlaced.mscap.gz",        // mCLsetscancfglist 1
@@ -35,7 +35,10 @@ std::vector<ScanTelegram> scans(const std::string& name)
         {
             auto t = parseScan(d.data);
             EXPECT_TRUE(t.has_value()) << name;
-            if (t) out.push_back(std::move(*t));
+            if (t)
+            {
+                out.push_back(std::move(*t));
+            }
         }
     }
     return out;
@@ -79,7 +82,9 @@ TEST(CompactPacket, RealCapturesRoundTripExactly)
 TEST(CompactPacket, SyntheticSegmentsMatchRealSizes)
 {
     // sizes of real datagrams for the same configurations
-    EXPECT_EQ(serialize(makeSegment(SyntheticConfig::live(), 3, 7)).size(), 3456u);
+    EXPECT_EQ(
+        serialize(makeSegment(SyntheticConfig::live(), 3, 7)).size(),
+        3456u);
     SyntheticConfig all;
     all.echoes = 3;
     EXPECT_EQ(serialize(makeSegment(all, 3, 7)).size(), 14160u);
@@ -93,8 +98,23 @@ TEST(CompactPacket, SyntheticSegmentsRoundTrip)
     cfgs[3].content_echoes = ECHO_HAS_DISTANCE;
     cfgs[4].content_beams = BEAM_HAS_PROPERTIES;
     cfgs[5].distance_scale = 2.5f;
-    cfgs[5].layers = {true, false, false, true, true, true, false, true,
-                      false, false, false, false, false, true, false, false};
+    cfgs[5].layers = {
+        true,
+        false,
+        false,
+        true,
+        true,
+        true,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false};
     for (const auto& cfg : cfgs)
     {
         for (uint32_t seg = 0; seg < 12; seg++)
@@ -113,7 +133,8 @@ TEST(CompactPacket, RejectsCorruption)
     auto bad = bytes;
     bad[1000] ^= 0x40;
     EXPECT_FALSE(parseScan(bad).has_value());
-    EXPECT_FALSE(parseScan(std::span(bytes).first(bytes.size() - 1)).has_value());
+    EXPECT_FALSE(
+        parseScan(std::span(bytes).first(bytes.size() - 1)).has_value());
 }
 
 
@@ -140,11 +161,15 @@ TEST(SensorBehaviour, FramesAreTwelveSegmentsKeyedByFrameNumber)
         {
             EXPECT_EQ(t[i].telegram_counter, t[i - 1].telegram_counter + 1);
         }
-        frames[t[i].modules[0].frame_number].push_back(t[i].modules[0].segment_counter);
+        frames[t[i].modules[0].frame_number].push_back(
+            t[i].modules[0].segment_counter);
     }
     ASSERT_EQ(frames.size(), 10u);
     const std::vector<uint64_t> all = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
-    for (const auto& [f, segs] : frames) EXPECT_EQ(segs, all) << "frame " << f;
+    for (const auto& [f, segs] : frames)
+    {
+        EXPECT_EQ(segs, all) << "frame " << f;
+    }
 }
 
 TEST(SensorBehaviour, AllLayersModuleOrderIsLowResThenHighRes)
@@ -159,14 +184,20 @@ TEST(SensorBehaviour, AllLayersModuleOrderIsLowResThenHighRes)
     EXPECT_EQ(m[2].beams, 240u);
     EXPECT_EQ(m[3].lines, 1u);
     EXPECT_EQ(m[3].beams, 240u);
-    for (const auto& mm : m) EXPECT_EQ(mm.echoes, 3u);
+    for (const auto& mm : m)
+    {
+        EXPECT_EQ(mm.echoes, 3u);
+    }
 }
 
 TEST(SensorBehaviour, NarrowOutputRangeOmitsSegments)
 {
     // with -10..+10 deg only segments where either measuring unit sees the range are sent
     std::set<uint64_t> segs;
-    for (const auto& t : scans("range_pm10.mscap.gz")) segs.insert(t.modules[0].segment_counter);
+    for (const auto& t : scans("range_pm10.mscap.gz"))
+    {
+        segs.insert(t.modules[0].segment_counter);
+    }
     EXPECT_EQ(segs, (std::set<uint64_t>{0, 1, 5, 6, 7, 11}));
 }
 
@@ -175,7 +206,10 @@ TEST(SensorBehaviour, InterlacedShiftsAzimuthByEighthDegreePerFrame)
     std::vector<float> theta;
     for (const auto& t : scans("interlaced.mscap.gz"))
     {
-        if (t.modules[0].segment_counter == 1) theta.push_back(t.modules[0].theta_start[0]);
+        if (t.modules[0].segment_counter == 1)
+        {
+            theta.push_back(t.modules[0].theta_start[0]);
+        }
         EXPECT_EQ(t.modules[0].beams, 30u);
     }
     ASSERT_GE(theta.size(), 9u);
@@ -183,7 +217,10 @@ TEST(SensorBehaviour, InterlacedShiftsAzimuthByEighthDegreePerFrame)
     for (size_t i = 1; i < theta.size(); i++)
     {
         double d = theta[i] - theta[i - 1];
-        if (d < -3 * EIGHTH_DEG) d += 8 * EIGHTH_DEG;  // wraps after 8 frames
+        if (d < -3 * EIGHTH_DEG)
+        {
+            d += 8 * EIGHTH_DEG;  // wraps after 8 frames
+        }
         EXPECT_NEAR(d, EIGHTH_DEG, 1e-4) << i;
     }
 }

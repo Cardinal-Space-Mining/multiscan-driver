@@ -20,12 +20,16 @@ int main(int argc, char** argv)
 {
     const int iters = argc > 1 ? std::atoi(argv[1]) : 20;
 
-    for (const char* file : {"live_1echo.mscap.gz", "all_layers_3echo.mscap.gz"})
+    for (const char* file :
+         {"live_1echo.mscap.gz", "all_layers_3echo.mscap.gz"})
     {
         std::vector<ms_test::CapturedDatagram> scans;
         for (auto& d : ms_test::readCapture(ms_test::fixture(file)))
         {
-            if (compact::telegramType(d.data) == compact::TelegramType::Scan) scans.push_back(std::move(d));
+            if (compact::telegramType(d.data) == compact::TelegramType::Scan)
+            {
+                scans.push_back(std::move(d));
+            }
         }
         const double n = static_cast<double>(scans.size()) * iters;
 
@@ -34,10 +38,16 @@ int main(int argc, char** argv)
         for (int i = 0; i < iters; i++)
         {
             ms_test::legacy::Pipeline oracle;
-            for (const auto& d : scans) oracle.feed(d.data, d.recv_time_ns);
+            for (const auto& d : scans)
+            {
+                oracle.feed(d.data, d.recv_time_ns);
+            }
             clouds_old += oracle.clouds.size();
         }
-        const double us_old = std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / n;
+        const double us_old =
+            std::chrono::duration<double, std::micro>(Clock::now() - t0)
+                .count() /
+            n;
 
         compact::ScanDecoder dec(multiscan::PointLayout::all());
         std::vector<multiscan::FrameAssembler::Frame> frames;
@@ -46,15 +56,25 @@ int main(int argc, char** argv)
         for (int i = 0; i < iters; i++)
         {
             // a fresh assembler per pass: the captures' frame numbers repeat
-            multiscan::FrameAssembler asmb(dec, {}, [](uint64_t us, uint64_t) { return us * 1000; });
+            multiscan::FrameAssembler asmb(
+                dec,
+                {},
+                [](uint64_t us, uint64_t) { return us * 1000; });
             for (const auto& d : scans)
             {
-                if (asmb.add(d.data, d.recv_time_ns, frames) != compact::Error::None) return 1;
+                if (asmb.add(d.data, d.recv_time_ns, frames) !=
+                    compact::Error::None)
+                {
+                    return 1;
+                }
                 clouds_new += frames.size();
                 frames.clear();
             }
         }
-        const double us_new = std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / n;
+        const double us_new =
+            std::chrono::duration<double, std::micro>(Clock::now() - t0)
+                .count() /
+            n;
 
         // decoder alone, into one reused buffer: what the assembler adds is the difference
         std::vector<uint8_t> scratch(4096 * 52);
@@ -64,14 +84,29 @@ int main(int argc, char** argv)
             for (const auto& d : scans)
             {
                 compact::ScanInfo info;
-                if (dec.decode(d.data, scratch.data(), 4096, info) != compact::Error::None) return 1;
+                if (dec.decode(d.data, scratch.data(), 4096, info) !=
+                    compact::Error::None)
+                {
+                    return 1;
+                }
             }
         }
-        const double us_dec = std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / n;
+        const double us_dec =
+            std::chrono::duration<double, std::micro>(Clock::now() - t0)
+                .count() /
+            n;
         std::printf("%-26s decoder alone %6.2f us/segment\n", "", us_dec);
-        std::printf("%-26s %5zu B/segment: old %7.2f us/segment, new %6.2f us/segment (%.1fx), "
-                    "%.3f -> %.3f ms per 20 Hz frame (%zu/%zu clouds)\n",
-                    file, scans[0].data.size(), us_old, us_new, us_old / us_new, us_old * 12 / 1000,
-                    us_new * 12 / 1000, clouds_old, clouds_new);
+        std::printf(
+            "%-26s %5zu B/segment: old %7.2f us/segment, new %6.2f us/segment (%.1fx), "
+            "%.3f -> %.3f ms per 20 Hz frame (%zu/%zu clouds)\n",
+            file,
+            scans[0].data.size(),
+            us_old,
+            us_new,
+            us_old / us_new,
+            us_old * 12 / 1000,
+            us_new * 12 / 1000,
+            clouds_old,
+            clouds_new);
     }
 }

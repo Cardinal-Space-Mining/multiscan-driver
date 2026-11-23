@@ -57,14 +57,14 @@ enum class Field : uint8_t
     X,
     Y,
     Z,
-    Intensity,   // RSSI of the published echo, float32
-    Range,       // m, float32
-    Azimuth,     // rad, float32
-    Elevation,   // rad, float32
-    Layer,       // 0..15, uint32
-    Echo,        // 0..2, uint32
-    Index,       // beam index within the layer over a full revolution, uint32
-    Time,        // us, uint64 published as uint32 fields "tl" (low) and "th" (high)
+    Intensity,  // RSSI of the published echo, float32
+    Range,      // m, float32
+    Azimuth,    // rad, float32
+    Elevation,  // rad, float32
+    Layer,      // 0..15, uint32
+    Echo,       // 0..2, uint32
+    Index,      // beam index within the layer over a full revolution, uint32
+    Time,  // us, uint64 published as uint32 fields "tl" (low) and "th" (high)
     Reflective,  // 0 or 1, float32
     COUNT
 };
@@ -92,7 +92,9 @@ public:
      * "elevation", "layer", "echo", "index", "tl" or "th" or "time",
      * "reflective"). x, y and z are required; order and duplicates don't
      * matter. Returns nullopt and sets `error` for unknown names. */
-    static std::optional<PointLayout> fromNames(const std::vector<std::string>& names, std::string& error);
+    static std::optional<PointLayout> fromNames(
+        const std::vector<std::string>& names,
+        std::string& error);
 
     int32_t offset(Field f) const { return offsets[static_cast<size_t>(f)]; }
     bool has(Field f) const { return offset(f) != ABSENT; }
@@ -100,7 +102,8 @@ public:
     const std::vector<FieldDescriptor>& fields() const { return descriptors; }
 
 private:
-    explicit PointLayout(const std::array<bool, static_cast<size_t>(Field::COUNT)>& enabled);
+    explicit PointLayout(
+        const std::array<bool, static_cast<size_t>(Field::COUNT)>& enabled);
 
     std::array<int32_t, static_cast<size_t>(Field::COUNT)> offsets;
     uint32_t point_step = 0;

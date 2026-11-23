@@ -25,13 +25,17 @@ struct Cloud
     uint32_t width = 0;
     uint32_t stamp_sec = 0;
     uint32_t stamp_nsec = 0;
-    size_t pointCount() const { return point_step ? data.size() / point_step : 0; }
+    size_t pointCount() const
+    {
+        return point_step ? data.size() / point_step : 0;
+    }
 };
 
 struct Imu
 {
     uint32_t stamp_sec = 0, stamp_nsec = 0;
-    double angular_velocity[3]{}, linear_acceleration[3]{}, orientation_wxyz[4]{};
+    double angular_velocity[3]{}, linear_acceleration[3]{},
+        orientation_wxyz[4]{};
 };
 
 class Pipeline

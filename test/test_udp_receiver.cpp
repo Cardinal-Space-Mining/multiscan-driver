@@ -23,15 +23,25 @@ void sendTo(uint16_t port, const std::vector<uint8_t>& payload)
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    ASSERT_EQ(::sendto(fd, payload.data(), payload.size(), 0, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)),
-              static_cast<ssize_t>(payload.size()));
+    ASSERT_EQ(
+        ::sendto(
+            fd,
+            payload.data(),
+            payload.size(),
+            0,
+            reinterpret_cast<sockaddr*>(&addr),
+            sizeof(addr)),
+        static_cast<ssize_t>(payload.size()));
     ::close(fd);
 }
 
 std::vector<uint8_t> pattern(size_t n, uint8_t seed)
 {
     std::vector<uint8_t> v(n);
-    for (size_t i = 0; i < n; i++) v[i] = static_cast<uint8_t>(i * 31 + seed);
+    for (size_t i = 0; i < n; i++)
+    {
+        v[i] = static_cast<uint8_t>(i * 31 + seed);
+    }
     return v;
 }
 
@@ -39,7 +49,8 @@ uint64_t realtimeNs()
 {
     timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts.tv_nsec);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL +
+           static_cast<uint64_t>(ts.tv_nsec);
 }
 
 }  // namespace
@@ -65,14 +76,16 @@ TEST(UdpReceiver, ReceivesBatchesFromSeveralPortsWithTimestamps)
 
     std::vector<UdpReceiver::Datagram> batch;
     std::vector<std::vector<uint8_t>> got_scan, got_imu;
-    for (int tries = 0; tries < 20 && got_scan.size() + got_imu.size() < 11; tries++)
+    for (int tries = 0; tries < 20 && got_scan.size() + got_imu.size() < 11;
+         tries++)
     {
         ASSERT_GE(r.receive(batch, 100), 0);
         for (const auto& d : batch)
         {
             EXPECT_GE(d.recv_ns, t0);
             EXPECT_LE(d.recv_ns, t1 + 1'000'000);
-            (d.port == scan_port ? got_scan : got_imu).emplace_back(d.data.begin(), d.data.end());
+            (d.port == scan_port ? got_scan : got_imu)
+                .emplace_back(d.data.begin(), d.data.end());
         }
     }
     EXPECT_EQ(got_scan, scans);
@@ -89,7 +102,9 @@ TEST(UdpReceiver, TimesOutWithoutData)
     std::vector<UdpReceiver::Datagram> batch;
     const auto t0 = std::chrono::steady_clock::now();
     EXPECT_EQ(r.receive(batch, 30), 0);
-    EXPECT_GE(std::chrono::steady_clock::now() - t0, std::chrono::milliseconds(25));
+    EXPECT_GE(
+        std::chrono::steady_clock::now() - t0,
+        std::chrono::milliseconds(25));
     EXPECT_TRUE(batch.empty());
 }
 
@@ -100,11 +115,13 @@ TEST(UdpReceiver, StopWakesABlockedReceiveImmediately)
     ASSERT_TRUE(r.open({0}, 0, err)) << err;
     std::atomic<int> result{1};
     std::chrono::steady_clock::time_point returned;
-    std::thread t([&] {
-        std::vector<UdpReceiver::Datagram> batch;
-        result = r.receive(batch, 10'000);
-        returned = std::chrono::steady_clock::now();
-    });
+    std::thread t(
+        [&]
+        {
+            std::vector<UdpReceiver::Datagram> batch;
+            result = r.receive(batch, 10'000);
+            returned = std::chrono::steady_clock::now();
+        });
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     const auto stopped = std::chrono::steady_clock::now();
     r.stop();

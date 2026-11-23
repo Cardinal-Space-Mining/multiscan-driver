@@ -54,20 +54,22 @@ struct FieldInfo
     uint8_t datatype;
 };
 
-constexpr std::array<FieldInfo, N_FIELDS> FIELD_INFO = {{
-    {"x", 4, POINT_FIELD_FLOAT32},
-    {"y", 4, POINT_FIELD_FLOAT32},
-    {"z", 4, POINT_FIELD_FLOAT32},
-    {"intensity", 4, POINT_FIELD_FLOAT32},
-    {"range", 4, POINT_FIELD_FLOAT32},
-    {"azimuth", 4, POINT_FIELD_FLOAT32},
-    {"elevation", 4, POINT_FIELD_FLOAT32},
-    {"layer", 4, POINT_FIELD_UINT32},
-    {"echo", 4, POINT_FIELD_UINT32},
-    {"index", 4, POINT_FIELD_UINT32},
-    {"time", 8, POINT_FIELD_UINT32},  // published as "tl" + "th"
-    {"reflective", 4, POINT_FIELD_FLOAT32},
-}};
+constexpr std::array<FieldInfo, N_FIELDS> FIELD_INFO = {
+    {
+     {"x", 4, POINT_FIELD_FLOAT32},
+     {"y", 4, POINT_FIELD_FLOAT32},
+     {"z", 4, POINT_FIELD_FLOAT32},
+     {"intensity", 4, POINT_FIELD_FLOAT32},
+     {"range", 4, POINT_FIELD_FLOAT32},
+     {"azimuth", 4, POINT_FIELD_FLOAT32},
+     {"elevation", 4, POINT_FIELD_FLOAT32},
+     {"layer", 4, POINT_FIELD_UINT32},
+     {"echo", 4, POINT_FIELD_UINT32},
+     {"index", 4, POINT_FIELD_UINT32},
+     {"time", 8, POINT_FIELD_UINT32},  // published as "tl" + "th"
+        {"reflective", 4, POINT_FIELD_FLOAT32},
+     }
+};
 }  // namespace
 
 
@@ -89,7 +91,8 @@ PointLayout::PointLayout(const std::array<bool, N_FIELDS>& enabled)
         }
         else
         {
-            descriptors.push_back({FIELD_INFO[i].name, off, FIELD_INFO[i].datatype});
+            descriptors.push_back(
+                {FIELD_INFO[i].name, off, FIELD_INFO[i].datatype});
         }
         off += FIELD_INFO[i].bytes;
     }
@@ -103,12 +106,15 @@ PointLayout PointLayout::all()
     return PointLayout{e};
 }
 
-std::optional<PointLayout> PointLayout::fromNames(const std::vector<std::string>& names, std::string& error)
+std::optional<PointLayout> PointLayout::fromNames(
+    const std::vector<std::string>& names,
+    std::string& error)
 {
     std::array<bool, N_FIELDS> e{};
     for (const std::string& n : names)
     {
-        const std::string name = (n == "tl" || n == "th") ? std::string("time") : n;
+        const std::string name =
+            (n == "tl" || n == "th") ? std::string("time") : n;
         bool found = false;
         for (size_t i = 0; i < N_FIELDS; i++)
         {

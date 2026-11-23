@@ -27,7 +27,10 @@ using namespace ms_test;
 namespace
 {
 
-void expectPointsEqual(const ExpectedPoint& got, const ExpectedPoint& exp, const std::string& where)
+void expectPointsEqual(
+    const ExpectedPoint& got,
+    const ExpectedPoint& exp,
+    const std::string& where)
 {
     EXPECT_FLOAT_EQ(got.range, exp.range) << where;
     EXPECT_FLOAT_EQ(got.azimuth, exp.azimuth) << where;
@@ -46,8 +49,11 @@ void expectPointsEqual(const ExpectedPoint& got, const ExpectedPoint& exp, const
 /* Compare one published cloud against the concatenated expectation of the
  * telegrams that make up the frame. Stops at the first mismatching point to
  * keep failure output readable. */
-void expectCloudMatches(const legacy::Cloud& cloud, const std::vector<ScanTelegram>& frame, int echo_selection,
-                        const std::string& name)
+void expectCloudMatches(
+    const legacy::Cloud& cloud,
+    const std::vector<ScanTelegram>& frame,
+    int echo_selection,
+    const std::string& name)
 {
     std::vector<ExpectedPoint> exp;
     for (const auto& t : frame)
@@ -59,22 +65,29 @@ void expectCloudMatches(const legacy::Cloud& cloud, const std::vector<ScanTelegr
     ASSERT_EQ(cloud.pointCount(), exp.size()) << name;
     for (size_t i = 0; i < exp.size(); i++)
     {
-        const auto got = readAllFieldsPoint(cloud.data.data() + i * cloud.point_step);
+        const auto got =
+            readAllFieldsPoint(cloud.data.data() + i * cloud.point_step);
         const auto before = ::testing::Test::HasFailure();
         expectPointsEqual(got, exp[i], name + " point " + std::to_string(i));
-        if (!before && ::testing::Test::HasFailure()) return;
+        if (!before && ::testing::Test::HasFailure())
+        {
+            return;
+        }
     }
 }
 
 struct FeedResult
 {
     legacy::Pipeline pipe;
-    std::vector<std::vector<ScanTelegram>> frames;  // telegrams per frame, arrival order
+    std::vector<std::vector<ScanTelegram>>
+        frames;  // telegrams per frame, arrival order
     std::vector<ImuTelegram> imus;
     explicit FeedResult(int echo_selection) : pipe(echo_selection) {}
 };
 
-std::unique_ptr<FeedResult> feedCapture(const std::string& name, int echo_selection = 1)
+std::unique_ptr<FeedResult> feedCapture(
+    const std::string& name,
+    int echo_selection = 1)
 {
     auto r = std::make_unique<FeedResult>(echo_selection);
     std::map<uint64_t, size_t> frame_slot;
@@ -105,11 +118,23 @@ std::unique_ptr<FeedResult> feedCapture(const std::string& name, int echo_select
 TEST(LegacyOracle, PointFieldListMatchesAllFieldsLayout)
 {
     using L = AllFieldsLayout;
-    const std::vector<sensor_msgs::msg::PointField> fields = MS_DRIVER_POINT_FIELD_LIST;
+    const std::vector<sensor_msgs::msg::PointField> fields =
+        MS_DRIVER_POINT_FIELD_LIST;
     const std::vector<std::pair<std::string, uint32_t>> expected = {
-        {"x", L::x}, {"y", L::y}, {"z", L::z}, {"intensity", L::intensity}, {"range", L::range},
-        {"azimuth", L::azimuth}, {"elevation", L::elevation}, {"layer", L::layer}, {"echo", L::echo},
-        {"index", L::index}, {"tl", L::tl}, {"th", L::th}, {"reflective", L::reflective}};
+        {         "x",          L::x},
+        {         "y",          L::y},
+        {         "z",          L::z},
+        { "intensity",  L::intensity},
+        {     "range",      L::range},
+        {   "azimuth",    L::azimuth},
+        { "elevation",  L::elevation},
+        {     "layer",      L::layer},
+        {      "echo",       L::echo},
+        {     "index",      L::index},
+        {        "tl",         L::tl},
+        {        "th",         L::th},
+        {"reflective", L::reflective}
+    };
     ASSERT_EQ(fields.size(), expected.size());
     for (size_t i = 0; i < fields.size(); i++)
     {
@@ -128,7 +153,11 @@ TEST(LegacyOracle, MatchesSpecOnLiveCapture)
     for (size_t f = 0; f < r->frames.size(); f++)
     {
         EXPECT_EQ(r->pipe.clouds[f].pointCount(), 5040u);
-        expectCloudMatches(r->pipe.clouds[f], r->frames[f], 1, "live frame " + std::to_string(f));
+        expectCloudMatches(
+            r->pipe.clouds[f],
+            r->frames[f],
+            1,
+            "live frame " + std::to_string(f));
     }
 }
 
@@ -141,8 +170,12 @@ TEST(LegacyOracle, MatchesSpecOnAllLayersCaptureForEachEcho)
         for (size_t f = 0; f < r->frames.size(); f++)
         {
             EXPECT_EQ(r->pipe.clouds[f].pointCount(), 10800u);
-            expectCloudMatches(r->pipe.clouds[f], r->frames[f], echo,
-                               "all-layers echo " + std::to_string(echo) + " frame " + std::to_string(f));
+            expectCloudMatches(
+                r->pipe.clouds[f],
+                r->frames[f],
+                echo,
+                "all-layers echo " + std::to_string(echo) + " frame " +
+                    std::to_string(f));
         }
     }
 }
@@ -153,7 +186,11 @@ TEST(LegacyOracle, MatchesSpecOnInterlacedCapture)
     ASSERT_EQ(r->pipe.clouds.size(), r->frames.size());
     for (size_t f = 0; f < r->frames.size(); f++)
     {
-        expectCloudMatches(r->pipe.clouds[f], r->frames[f], 1, "interlaced frame " + std::to_string(f));
+        expectCloudMatches(
+            r->pipe.clouds[f],
+            r->frames[f],
+            1,
+            "interlaced frame " + std::to_string(f));
     }
 }
 
@@ -170,36 +207,64 @@ TEST(LegacyOracle, ImuMatchesCapture)
             EXPECT_EQ(got.linear_acceleration[k], exp.acceleration[k]);
             EXPECT_EQ(got.angular_velocity[k], exp.angular_velocity[k]);
         }
-        for (int k = 0; k < 4; k++) EXPECT_EQ(got.orientation_wxyz[k], exp.orientation[k]);
+        for (int k = 0; k < 4; k++)
+        {
+            EXPECT_EQ(got.orientation_wxyz[k], exp.orientation[k]);
+        }
     }
 }
 
 TEST(LegacyOracle, MatchesSpecOnSyntheticConfigurations)
 {
-    struct Case { std::string name; SyntheticConfig cfg; int echo_selection; };
+    struct Case
+    {
+        std::string name;
+        SyntheticConfig cfg;
+        int echo_selection;
+    };
     std::vector<Case> cases;
     cases.push_back({"live", SyntheticConfig::live(), 1});
     cases.push_back({"all layers", SyntheticConfig{}, 1});
     {
-        SyntheticConfig c; c.echoes = 3;
+        SyntheticConfig c;
+        c.echoes = 3;
         cases.push_back({"3 echoes, select 2", c, 2});
         cases.push_back({"3 echoes, select 4 (falls back to 1)", c, 4});
     }
     {
-        SyntheticConfig c = SyntheticConfig::live(); c.content_echoes = ECHO_HAS_DISTANCE;
+        SyntheticConfig c = SyntheticConfig::live();
+        c.content_echoes = ECHO_HAS_DISTANCE;
         cases.push_back({"no rssi", c, 1});
     }
     {
-        SyntheticConfig c = SyntheticConfig::live(); c.content_beams = BEAM_HAS_PROPERTIES;
+        SyntheticConfig c = SyntheticConfig::live();
+        c.content_beams = BEAM_HAS_PROPERTIES;
         cases.push_back({"no per-beam azimuth", c, 1});
     }
     {
-        SyntheticConfig c; c.distance_scale = 2.5f;
+        SyntheticConfig c;
+        c.distance_scale = 2.5f;
         cases.push_back({"distance scale 2.5", c, 1});
     }
     {
         SyntheticConfig c;
-        c.layers = {true, false, true, false, true, true, false, true, true, true, false, false, true, false, true, true};
+        c.layers = {
+            true,
+            false,
+            true,
+            false,
+            true,
+            true,
+            false,
+            true,
+            true,
+            true,
+            false,
+            false,
+            true,
+            false,
+            true,
+            true};
         cases.push_back({"sparse layer filter", c, 1});
     }
     for (const auto& c : cases)
@@ -212,10 +277,17 @@ TEST(LegacyOracle, MatchesSpecOnSyntheticConfigurations)
             {
                 telegrams.push_back(makeSegment(c.cfg, seg, frame));
                 pipe.feed(serialize(telegrams.back()), 0);
-                if (seg == 5) pipe.feed(serialize(makeImu(frame * 50'000 + 20'000)), 0);
+                if (seg == 5)
+                {
+                    pipe.feed(serialize(makeImu(frame * 50'000 + 20'000)), 0);
+                }
             }
             ASSERT_EQ(pipe.clouds.size(), frame - 4) << c.name;
-            expectCloudMatches(pipe.clouds.back(), telegrams, c.echo_selection, c.name);
+            expectCloudMatches(
+                pipe.clouds.back(),
+                telegrams,
+                c.echo_selection,
+                c.name);
         }
         EXPECT_EQ(pipe.imus.size(), 2u) << c.name;
     }
@@ -249,8 +321,13 @@ TEST(LegacyOracle, LegacyBug_DroppedSegmentShiftsFramePhase)
     {
         for (uint32_t seg = 0; seg < 12; seg++)
         {
-            if (frame == 1 && seg == 7) continue;  // one lost datagram
-            pipe.feed(serialize(makeSegment(SyntheticConfig::live(), seg, frame)), 0);
+            if (frame == 1 && seg == 7)
+            {
+                continue;  // one lost datagram
+            }
+            pipe.feed(
+                serialize(makeSegment(SyntheticConfig::live(), seg, frame)),
+                0);
         }
     }
     // Frame 1 is never published: its segments 0-6 are overwritten by frame 2.
@@ -265,12 +342,15 @@ TEST(LegacyOracle, LegacyBug_DroppedSegmentShiftsFramePhase)
         const auto& cloud = pipe.clouds[c];
         for (size_t i = 0; i < cloud.pointCount(); i++)
         {
-            const auto p = readAllFieldsPoint(cloud.data.data() + i * cloud.point_step);
+            const auto p =
+                readAllFieldsPoint(cloud.data.data() + i * cloud.point_step);
             t_min = std::min(t_min, p.time_us);
             t_max = std::max(t_max, p.time_us);
         }
-        const uint64_t prev_frame_seg8 = 1'000'000'000ULL + c * 50'000ULL + 8 * 4'167ULL;
-        EXPECT_EQ(t_min, prev_frame_seg8) << "cloud " << c << " starts at segment 8 of frame " << c;
+        const uint64_t prev_frame_seg8 =
+            1'000'000'000ULL + c * 50'000ULL + 8 * 4'167ULL;
+        EXPECT_EQ(t_min, prev_frame_seg8)
+            << "cloud " << c << " starts at segment 8 of frame " << c;
         EXPECT_LT(t_max - t_min, 55'000u) << "cloud " << c;
     }
 }

@@ -99,9 +99,10 @@ struct ScanInfo
     uint64_t segment = 0;
     uint64_t frame = 0;
     uint32_t sender_id = 0;
-    uint32_t points = 0;            // points written (or required, on BufferTooSmall)
-    uint64_t start_time_us = 0;     // first beam of the lowest layer id (sensor clock)
-    uint64_t time_min_us = 0;       // min/max point time (sensor clock)
+    uint32_t points = 0;  // points written (or required, on BufferTooSmall)
+    uint64_t start_time_us =
+        0;  // first beam of the lowest layer id (sensor clock)
+    uint64_t time_min_us = 0;  // min/max point time (sensor clock)
     uint64_t time_max_us = 0;
 };
 
@@ -133,7 +134,11 @@ public:
     /* Validate a scan telegram and write its points to `out`, which must
      * have room for `capacity` points of layout().pointStep() bytes each.
      * On BufferTooSmall, info.points holds the number of points required. */
-    Error decode(std::span<const uint8_t> datagram, uint8_t* out, size_t capacity, ScanInfo& info);
+    Error decode(
+        std::span<const uint8_t> datagram,
+        uint8_t* out,
+        size_t capacity,
+        ScanInfo& info);
 
     const PointLayout& layout() const { return point_layout; }
     const DecodeOptions& options() const { return opts; }
@@ -152,8 +157,9 @@ private:
     struct LineShape
     {
         uint32_t layer_id;
-        uint32_t out_offset;       // first output point of this line
-        uint32_t index_stride;     // points per segment in this layer (index = segment * stride + beam)
+        uint32_t out_offset;  // first output point of this line
+        uint32_t
+            index_stride;  // points per segment in this layer (index = segment * stride + beam)
         float elevation, sin_el, cos_el;
     };
 
@@ -174,7 +180,8 @@ private:
     bool shape_valid = false;
     std::vector<std::vector<LineShape>> shape;  // [module][line]
     uint32_t shape_points = 0;
-    uint32_t shape_first_module = 0, shape_first_line = 0;  // line holding the lowest layer id
+    uint32_t shape_first_module = 0,
+             shape_first_line = 0;  // line holding the lowest layer id
 };
 
 }  // namespace multiscan::compact

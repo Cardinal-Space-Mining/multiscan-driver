@@ -40,7 +40,9 @@ Pipeline::~Pipeline() { delete s; }
 
 
 // multiscan_driver.cpp: moveSegmentsNoIMU()
-static void moveSegmentsNoIMU(ScanSegmentParserOutput& a, ScanSegmentParserOutput& b)
+static void moveSegmentsNoIMU(
+    ScanSegmentParserOutput& a,
+    ScanSegmentParserOutput& b)
 {
     a.scandata = std::move(b.scandata);
     a.timestamp = std::move(b.timestamp);
@@ -52,32 +54,47 @@ static void moveSegmentsNoIMU(ScanSegmentParserOutput& a, ScanSegmentParserOutpu
 
 void Pipeline::feed(std::span<const uint8_t> datagram, uint64_t recv_time_ns)
 {
-    static const std::vector<uint8_t> UDP_MSG_START_SEQ({0x02, 0x02, 0x02, 0x02});
+    static const std::vector<uint8_t> UDP_MSG_START_SEQ(
+        {0x02, 0x02, 0x02, 0x02});
     std::vector<uint8_t> udp_buffer(datagram.begin(), datagram.end());
     const size_t bytes_received = udp_buffer.size();
     const chrono_system_time recv_start_time{
-        std::chrono::duration_cast<chrono_system_clock::duration>(std::chrono::nanoseconds(recv_time_ns))};
+        std::chrono::duration_cast<chrono_system_clock::duration>(
+            std::chrono::nanoseconds(recv_time_ns))};
 
     // --- recvSegmentData() (compact branch, one complete datagram) ---------
     const bool recv_ok = (bytes_received > UDP_MSG_START_SEQ.size() + 8) &&
-                         std::equal(udp_buffer.begin(), udp_buffer.begin() + UDP_MSG_START_SEQ.size(),
-                                    UDP_MSG_START_SEQ.begin());
+                         std::equal(
+                             udp_buffer.begin(),
+                             udp_buffer.begin() + UDP_MSG_START_SEQ.size(),
+                             UDP_MSG_START_SEQ.begin());
     if (!recv_ok)
     {
         receive_rejects++;
         return;
     }
     uint32_t payload_len_bytes = 0, n_bytes_req = 0;
-    if (!CompactDataParser::ParseSegment(udp_buffer.data(), bytes_received, 0, payload_len_bytes, n_bytes_req))
+    if (!CompactDataParser::ParseSegment(
+            udp_buffer.data(),
+            bytes_received,
+            0,
+            payload_len_bytes,
+            n_bytes_req))
     {
         receive_rejects++;
         return;
     }
-    const uint32_t bytes_to_receive = static_cast<uint32_t>(payload_len_bytes + sizeof(uint32_t));
-    const size_t bytes_valid = std::min<size_t>(bytes_received, bytes_to_receive);
-    const uint32_t u32_payload_crc = Convert4Byte(udp_buffer.data() + bytes_valid - sizeof(uint32_t));
-    const std::vector<uint8_t> payload{udp_buffer.begin(), udp_buffer.begin() + bytes_valid - sizeof(uint32_t)};
-    if (u32_payload_crc != sick_scansegment_xd::crc32(0, payload.data(), payload.size()))
+    const uint32_t bytes_to_receive =
+        static_cast<uint32_t>(payload_len_bytes + sizeof(uint32_t));
+    const size_t bytes_valid =
+        std::min<size_t>(bytes_received, bytes_to_receive);
+    const uint32_t u32_payload_crc =
+        Convert4Byte(udp_buffer.data() + bytes_valid - sizeof(uint32_t));
+    const std::vector<uint8_t> payload{
+        udp_buffer.begin(),
+        udp_buffer.begin() + bytes_valid - sizeof(uint32_t)};
+    if (u32_payload_crc !=
+        sick_scansegment_xd::crc32(0, payload.data(), payload.size()))
     {
         receive_rejects++;
         return;
@@ -85,7 +102,13 @@ void Pipeline::feed(std::span<const uint8_t> datagram, uint64_t recv_time_ns)
 
     // --- parseSegment() ----------------------------------------------------
     ScanSegmentParserOutput segment;
-    if (!CompactDataParser::Parse(udp_buffer, recv_start_time, segment, 0, true, false))
+    if (!CompactDataParser::Parse(
+            udp_buffer,
+            recv_start_time,
+            segment,
+            0,
+            true,
+            false))
     {
         parse_failures++;
         return;
@@ -117,7 +140,8 @@ void Pipeline::feed(std::span<const uint8_t> datagram, uint64_t recv_time_ns)
         if (idx < ms136::SEGMENTS_PER_FRAME)
         {
             s->samples[idx].emplace_front();
-            if (s->samples[idx].size() > static_cast<size_t>(s->max_segment_buffering))
+            if (s->samples[idx].size() >
+                static_cast<size_t>(s->max_segment_buffering))
             {
                 s->samples[idx].resize(s->max_segment_buffering);
             }
@@ -136,8 +160,10 @@ void Pipeline::feed(std::span<const uint8_t> datagram, uint64_t recv_time_ns)
     using ScanLine = ScanSegmentParserOutput::Scanline;
     using LidarPoint = ScanSegmentParserOutput::LidarPoint;
 
-    constexpr size_t POINT_CONTINUOUS_BYTE_LEN = COMPUTE_NUM_CONTIGUOUS_POINT_FIELDS(MS_DRIVER_POINT_TYPE_FIELDS) * 4;
-    constexpr size_t POINT_BYTE_LEN = COMPUTE_NUM_POINT_FIELDS(MS_DRIVER_POINT_TYPE_FIELDS) * 4;
+    constexpr size_t POINT_CONTINUOUS_BYTE_LEN =
+        COMPUTE_NUM_CONTIGUOUS_POINT_FIELDS(MS_DRIVER_POINT_TYPE_FIELDS) * 4;
+    constexpr size_t POINT_BYTE_LEN =
+        COMPUTE_NUM_POINT_FIELDS(MS_DRIVER_POINT_TYPE_FIELDS) * 4;
 
     Cloud scan;
     scan.data.reserve(ms136::MAX_POINTS_PER_SCAN * POINT_BYTE_LEN);
@@ -146,8 +172,9 @@ void Pipeline::feed(std::span<const uint8_t> datagram, uint64_t recv_time_ns)
     for (size_t seg_i = 0; seg_i < ms136::SEGMENTS_PER_FRAME; seg_i++)
     {
         ScanSegmentParserOutput& seg = s->samples[seg_i].front();
-        const uint64_t ts = static_cast<uint64_t>(seg.timestamp_sec) * 1000000000UL +
-                            static_cast<uint64_t>(seg.timestamp_nsec);
+        const uint64_t ts =
+            static_cast<uint64_t>(seg.timestamp_sec) * 1000000000UL +
+            static_cast<uint64_t>(seg.timestamp_nsec);
         earliest_ts = std::min(ts, earliest_ts);
 
         for (ScanLayer& layer : seg.scandata)
@@ -156,30 +183,40 @@ void Pipeline::feed(std::span<const uint8_t> datagram, uint64_t recv_time_ns)
             {
                 continue;
             }
-            const size_t echo_i = (s->echo_selection >= 1 &&
-                                   static_cast<size_t>(s->echo_selection) <= layer.scanlines.size())
-                                      ? static_cast<size_t>(s->echo_selection - 1)
-                                      : 0;
+            const size_t echo_i =
+                (s->echo_selection >= 1 &&
+                 static_cast<size_t>(s->echo_selection) <=
+                     layer.scanlines.size())
+                    ? static_cast<size_t>(s->echo_selection - 1)
+                    : 0;
             ScanLine& line = layer.scanlines[echo_i];
             const size_t points_per_seg = line.points.size();
 
             for (LidarPoint& point : line.points)
             {
-                point.pointIdx = static_cast<uint32_t>((seg_i * points_per_seg) + point.pointIdx);
+                point.pointIdx = static_cast<uint32_t>(
+                    (seg_i * points_per_seg) + point.pointIdx);
 
                 scan.data.resize(scan.data.size() + POINT_BYTE_LEN);
-                uint8_t* const point_data = scan.data.data() + scan.data.size() - POINT_BYTE_LEN;
+                uint8_t* const point_data =
+                    scan.data.data() + scan.data.size() - POINT_BYTE_LEN;
 
                 std::memcpy(point_data, &point, POINT_CONTINUOUS_BYTE_LEN);
 #if POINT_FIELDS_HAVE_TIMESTAMP(MS_DRIVER_POINT_TYPE_FIELDS)
-                std::memcpy(point_data + POINT_CONTINUOUS_BYTE_LEN, &point.lidar_timestamp_microsec,
-                            sizeof(point.lidar_timestamp_microsec));
+                std::memcpy(
+                    point_data + POINT_CONTINUOUS_BYTE_LEN,
+                    &point.lidar_timestamp_microsec,
+                    sizeof(point.lidar_timestamp_microsec));
 #endif
 #if POINT_FIELDS_HAVE_REFLECTOR(MS_DRIVER_POINT_TYPE_FIELDS)
                 const float refl = static_cast<float>(point.reflectorbit);
-                std::memcpy(point_data + POINT_CONTINUOUS_BYTE_LEN +
-                                POINT_FIELDS_HAVE_TIMESTAMP(MS_DRIVER_POINT_TYPE_FIELDS) * 8,
-                            &refl, sizeof(refl));
+                std::memcpy(
+                    point_data + POINT_CONTINUOUS_BYTE_LEN +
+                        POINT_FIELDS_HAVE_TIMESTAMP(
+                            MS_DRIVER_POINT_TYPE_FIELDS) *
+                            8,
+                    &refl,
+                    sizeof(refl));
 #endif
             }
         }

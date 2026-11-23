@@ -42,16 +42,32 @@ struct ExpectedPoint
 
 /* The layer table the driver maps elevations onto (mdeg, phi sign). */
 inline constexpr std::array<int, 16> LAYER_ELEVATION_MDEG = {
-    22710, 17560, 12480, 7510, 2490, 70, -2430, -7290,
-    -12790, -17280, -21940, -26730, -31860, -34420, -37180, -42790};
+    22710,
+    17560,
+    12480,
+    7510,
+    2490,
+    70,
+    -2430,
+    -7290,
+    -12790,
+    -17280,
+    -21940,
+    -26730,
+    -31860,
+    -34420,
+    -37180,
+    -42790};
 
 inline uint32_t layerIdFromPhi(float phi_rad)
 {
-    const int mdeg = static_cast<int>(std::lround(phi_rad * 180000.0 / 3.14159265358979323846));
+    const int mdeg = static_cast<int>(
+        std::lround(phi_rad * 180000.0 / 3.14159265358979323846));
     uint32_t best = 0;
     for (uint32_t i = 1; i < LAYER_ELEVATION_MDEG.size(); i++)
     {
-        if (std::abs(mdeg - LAYER_ELEVATION_MDEG[i]) < std::abs(mdeg - LAYER_ELEVATION_MDEG[best]))
+        if (std::abs(mdeg - LAYER_ELEVATION_MDEG[i]) <
+            std::abs(mdeg - LAYER_ELEVATION_MDEG[best]))
         {
             best = i;
         }
@@ -59,9 +75,16 @@ inline uint32_t layerIdFromPhi(float phi_rad)
     return best;
 }
 
-inline std::vector<ExpectedPoint> expectedPoints(const ScanTelegram& t, int echo_selection = 1)
+inline std::vector<ExpectedPoint> expectedPoints(
+    const ScanTelegram& t,
+    int echo_selection = 1)
 {
-    struct Line { const Module* m; uint32_t line; uint32_t layer; };
+    struct Line
+    {
+        const Module* m;
+        uint32_t line;
+        uint32_t layer;
+    };
     std::vector<Line> lines;
     for (const Module& m : t.modules)
     {
@@ -70,31 +93,43 @@ inline std::vector<ExpectedPoint> expectedPoints(const ScanTelegram& t, int echo
             lines.push_back({&m, l, layerIdFromPhi(m.phi[l])});
         }
     }
-    std::stable_sort(lines.begin(), lines.end(), [](const Line& a, const Line& b) { return a.layer < b.layer; });
+    std::stable_sort(
+        lines.begin(),
+        lines.end(),
+        [](const Line& a, const Line& b) { return a.layer < b.layer; });
 
     std::vector<ExpectedPoint> out;
     for (const Line& ln : lines)
     {
         const Module& m = *ln.m;
-        const uint32_t echo = (echo_selection >= 1 && static_cast<uint32_t>(echo_selection) <= m.echoes)
-                                  ? static_cast<uint32_t>(echo_selection - 1)
-                                  : 0;
+        const uint32_t echo =
+            (echo_selection >= 1 &&
+             static_cast<uint32_t>(echo_selection) <= m.echoes)
+                ? static_cast<uint32_t>(echo_selection - 1)
+                : 0;
         const float el = -m.phi[ln.line];
         const float sin_el = std::sin(el), cos_el = std::cos(el);
-        const float az_delta = (m.theta_stop[ln.line] - m.theta_start[ln.line]) /
-                               static_cast<float>(std::max(1, static_cast<int>(m.beams) - 1));
-        const uint64_t t0 = m.time_start_us[ln.line], t1 = m.time_stop_us[ln.line];
+        const float az_delta =
+            (m.theta_stop[ln.line] - m.theta_start[ln.line]) /
+            static_cast<float>(std::max(1, static_cast<int>(m.beams) - 1));
+        const uint64_t t0 = m.time_start_us[ln.line],
+                       t1 = m.time_stop_us[ln.line];
         for (uint32_t b = 0; b < m.beams; b++)
         {
             const Beam& beam = m.at(ln.line, b);
             ExpectedPoint p;
             p.range = (m.content_echoes & ECHO_HAS_DISTANCE)
-                          ? (m.distance_scale * static_cast<float>(beam.echoes[echo].distance)) / 1000.f
+                          ? (m.distance_scale *
+                             static_cast<float>(beam.echoes[echo].distance)) /
+                                1000.f
                           : 0.f;
-            p.intensity = (m.content_echoes & ECHO_HAS_RSSI) ? static_cast<float>(beam.echoes[echo].rssi) : 0.f;
-            p.azimuth = (m.content_beams & BEAM_HAS_AZIMUTH)
-                            ? decodeAzimuth(beam.azimuth)
-                            : m.theta_start[ln.line] + static_cast<float>(b) * az_delta;
+            p.intensity = (m.content_echoes & ECHO_HAS_RSSI)
+                              ? static_cast<float>(beam.echoes[echo].rssi)
+                              : 0.f;
+            p.azimuth =
+                (m.content_beams & BEAM_HAS_AZIMUTH)
+                    ? decodeAzimuth(beam.azimuth)
+                    : m.theta_start[ln.line] + static_cast<float>(b) * az_delta;
             p.elevation = el;
             p.x = p.range * std::cos(p.azimuth) * cos_el;
             p.y = p.range * std::sin(p.azimuth) * cos_el;
@@ -102,8 +137,11 @@ inline std::vector<ExpectedPoint> expectedPoints(const ScanTelegram& t, int echo
             p.layer = ln.layer;
             p.echo = echo;
             p.index = static_cast<uint32_t>(m.segment_counter) * m.beams + b;
-            p.time_us = (b * (t1 - t0)) / std::max<uint64_t>(1, m.beams - 1) + t0;
-            p.reflective = (m.content_beams & BEAM_HAS_PROPERTIES) ? static_cast<float>(beam.properties & 1) : 0.f;
+            p.time_us =
+                (b * (t1 - t0)) / std::max<uint64_t>(1, m.beams - 1) + t0;
+            p.reflective = (m.content_beams & BEAM_HAS_PROPERTIES)
+                               ? static_cast<float>(beam.properties & 1)
+                               : 0.f;
             out.push_back(p);
         }
     }
@@ -113,8 +151,9 @@ inline std::vector<ExpectedPoint> expectedPoints(const ScanTelegram& t, int echo
 /* Field offsets of the driver's default (MS_POINT_FIELD_ENABLE_ALL) layout. */
 struct AllFieldsLayout
 {
-    static constexpr uint32_t x = 0, y = 4, z = 8, intensity = 12, range = 16, azimuth = 20,
-                              elevation = 24, layer = 28, echo = 32, index = 36, tl = 40, th = 44,
+    static constexpr uint32_t x = 0, y = 4, z = 8, intensity = 12, range = 16,
+                              azimuth = 20, elevation = 24, layer = 28,
+                              echo = 32, index = 36, tl = 40, th = 44,
                               reflective = 48, point_step = 52;
 };
 
