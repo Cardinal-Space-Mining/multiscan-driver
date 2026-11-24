@@ -1,0 +1,67 @@
+name: ROS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ros_distro: [jazzy, lyrical]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build ROS 2 ${{ matrix.ros_distro }} container
+        run: |
+          docker build \
+            --platform linux/x86_64 \
+            --build-arg ROS_DISTRO=${{ matrix.ros_distro }} \
+            -t ros-ci:${{ matrix.ros_distro }} \
+            -f .github/docker/Dockerfile .
+
+      # the tests use only loopback sockets and recorded captures (no sensor)
+      - name: Build and test
+        run: |
+          docker run --rm \
+            --platform linux/x86_64 \
+            ros-ci:${{ matrix.ros_distro }} \
+            /bin/bash -c "source /opt/ros/${{ matrix.ros_distro }}/setup.bash && \
+              cd /workspace && \
+              colcon build --event-handlers console_direct+ && \
+              colcon test --packages-select multiscan_driver --event-handlers console_direct+ && \
+              colcon test-result --verbose"
+
+  build-arm64:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for ARM64
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ROS 2 container
+        run: |
+          docker build \
+            --platform linux/arm64 \
+            --build-arg ROS_DISTRO=lyrical \
+            -t ros-ci:lyrical-arm64 \
+            -f .github/docker/Dockerfile .
+
+      - name: Build
+        run: |
+          docker run --rm \
+            --platform linux/arm64 \
+            ros-ci:lyrical-arm64 \
+            /bin/bash -c "source /opt/ros/lyrical/setup.bash && cd /workspace && colcon build --event-handlers console_direct+"

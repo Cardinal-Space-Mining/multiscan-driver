@@ -2,14 +2,105 @@
   ros__parameters:
 
     lidar_frame: "lidar_link"
-    lidar_hostname: ""
-    driver_hostname: ""
+    lidar_hostname: ""          # sensor IP (required)
+    driver_hostname: ""         # IP the sensor streams to; "" = this host's address towards the sensor
     lidar_udp_port: 2115
-    sopas_tcp_port: 2111
-    use_msgpack: false
-    use_cola_binary: true
-    udp_reset_timeout: 2.
-    udp_receive_timeout: 1.
-    sopas_read_timeout: 3.
-    error_restart_timeout: 3.
-    max_segment_buffers: 3
+    imu_udp_port: 2116          # IMU on its own socket; may equal lidar_udp_port
+    udp_receive_buffer_bytes: 4194304   # capped by net.core.rmem_max
+    sopas_tcp_port: 2111        # CoLa A (firmware 2.3: 2111 = CoLa A only, 2112 = CoLa B)
+    sopas_password: "F4724744"  # hash of the Authorized Client password (factory default)
+    udp_reset_timeout: 2.       # s without data before reconnecting
+    sopas_read_timeout: 3.      # s per SOPAS request
+    error_restart_timeout: 3.   # s between reconnect attempts
+    # 1-based echo to publish; falls back to the first echo the sensor sends.
+    # With sensor.echo_filter "first" or "last" only one echo is sent.
+    echo_selection: 1
+
+    time:
+      # estimated: sensor timestamps mapped to the host clock (offset + drift
+      #   fitted to the transmit/receive times; keeps the sensor's exact spacing)
+      # sensor:    sensor timestamps as is; only with sensor.time_sync ntp/ptp
+      #   (without sync the sensor clock counts from power-up)
+      # receive:   host receive time of each telegram (jittery; for debugging)
+      source: "estimated"
+
+    imu:
+      frame_id: ""              # "" = lidar_frame; else a static TF lidar_frame -> frame_id is published
+      publish_tf: true          # with the IMU offset from the optical origin (-17, +23.5, -30) mm
+      # diagonal variances (x, y, z); 0 = unknown
+      orientation_covariance: [0.0, 0.0, 0.0]
+      angular_velocity_covariance: [0.0, 0.0, 0.0]
+      linear_acceleration_covariance: [0.0, 0.0, 0.0]
+
+    diagnostics:
+      status_period: 2.0        # s between device state/temperature/contamination reads (0 = off)
+
+    output:
+      # any subset containing x, y, z; fields are always packed in this order
+      point_fields: ["x", "y", "z", "intensity", "range", "azimuth", "elevation",
+                     "layer", "echo", "index", "tl", "th", "reflective"]
+      # publish frames that end with segments missing (lost datagrams); the
+      # segments a narrowed output range omits are learned and not counted
+      publish_partial_frames: true
+
+    # Ghost point (artifact) classifier (models/README.md), run as the segments
+    # of a frame arrive, on one thread of its own. It adds ~5 ms to every
+    # frame on a desktop core (full model, early exit); /diagnostics "Ghost
+    # filter" shows the delay and work per frame on this machine. Not with
+    # sensor.interlaced. Points of the high-resolution layers are left alone.
+    ghost_filter:
+      enabled: false
+      # a path, or the name of a model in models/ (installed with the driver)
+      model_file: "artifact_full"           # range and intensity
+      fallback_model_file: "artifact_xyz"   # range only; if model_file can't be loaded
+      mode: "drop"              # drop: remove flagged points | annotate: add field "artifact"
+                                #   (probability, -1 = not classified) and keep every point
+      threshold: -1.0           # flag from this probability; < 0 = the model's own (0.3)
+      early_exit: true          # needed on one core: without it a frame takes ~50 ms
+
+    # Applied on every connect and read back to verify; never saved on the
+    # sensor (a power cycle restores its stored configuration). With apply
+    # false the driver only compares and warns. Invalid values disable apply.
+    # Defaults are the team sensor's current configuration.
+    sensor:
+      apply: true
+      echo_filter: "last"       # first | last | all
+      # layers 1..16 (0/1); 6 and 14 are the 0.125 deg high-resolution layers
+      layers: [1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1]
+      output_range_deg: [-180.0, 180.0]   # floats; segments fully outside aren't sent
+      interlaced: false         # 0.125 deg on all layers over 8 frames (not codec-compatible)
+      range_filter:             # zero points outside [min, max]
+        enabled: false
+        min_mm: 0
+        max_mm: 200000
+      cubic_filter:             # zero points outside the box (mm, x y z)
+        enabled: false
+        min_mm: [-20000, -20000, -20000]
+        max_mm: [20000, 20000, 20000]
+      particle_filter: false    # dust/rain/snow; adds one scan of latency
+      fog_filter: false
+      moving_average:
+        enabled: false
+        depth: 2                # scans averaged; adds depth x 50 ms latency
+      interval_filter:
+        enabled: false
+        factor: 4               # publish every n-th scan, 2..50
+      contamination:            # optics cover monitoring
+        strategy: "inactive"    # inactive | high_availability | sensitive
+        response_time_s: 3      # 3..60
+        sensitivity: "low"      # high | medium | low
+        custom_sectors: true
+        sectors: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]   # 30 deg sectors (0/1)
+        warning: true
+        error: true
+      time_sync:                # sensor clock synchronisation (TSCRole)
+        # off | ntp | ptp. Measured on fw 2.3 (keep "off"; time.source
+        # "estimated" maps the free-running clock to host time instead):
+        #  - ntp (chrony on the host): locks within a second, but the clock
+        #    stays 1-4 ms off and is corrected in ~1-2 ms steps every update.
+        #  - ptp (linuxptp master, UDP, E2E, v2.0 and v2.1): the sensor sends
+        #    no PTP messages and never corrects its time (a 10 s offset
+        #    stayed for minutes); at most its frequency seemed to follow.
+        mode: "off"
+        ntp_server: ""          # IPv4; "" = this host (needs an NTP server, e.g. chrony with 'allow')
+        ntp_update_s: 10        # 1..3600
