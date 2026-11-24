@@ -83,7 +83,7 @@ enum class Error
     BadModuleSize,    // module size doesn't match its metadata
     BufferTooSmall,
 };
-const char* toString(Error e);
+const char* toString(Error error);
 
 constexpr size_t SCAN_HEADER_BYTES = 32;
 constexpr size_t IMU_TELEGRAM_BYTES = 64;
@@ -94,16 +94,18 @@ constexpr uint32_t MAX_MODULES = 8;
 
 struct ScanInfo
 {
-    uint64_t telegram_counter = 0;
-    uint64_t transmit_time_us = 0;  // sensor clock
-    uint64_t segment = 0;
-    uint64_t frame = 0;
-    uint32_t sender_id = 0;
-    uint32_t points = 0;  // points written (or required, on BufferTooSmall)
-    uint64_t start_time_us =
-        0;  // first beam of the lowest layer id (sensor clock)
-    uint64_t time_min_us = 0;  // min/max point time (sensor clock)
-    uint64_t time_max_us = 0;
+    uint64_t telegram_counter{0};
+    uint64_t transmit_time_us{0};  // sensor clock
+    uint64_t segment_index{0};
+    uint64_t frame_number{0};
+    uint32_t sender_id{0};
+    /* Points written (or required, on BufferTooSmall). */
+    uint32_t num_points{0};
+    /* First beam of the lowest layer id (sensor clock). */
+    uint64_t start_time_us{0};
+    /* Earliest and latest point time (sensor clock). */
+    uint64_t time_min_us{0};
+    uint64_t time_max_us{0};
 };
 
 struct ImuSample
@@ -111,77 +113,126 @@ struct ImuSample
     std::array<float, 3> acceleration{};      // m/s^2, gravity included
     std::array<float, 3> angular_velocity{};  // rad/s
     std::array<float, 4> orientation{};       // quaternion w, x, y, z
-    uint64_t time_us = 0;                     // sensor clock
+    uint64_t time_us{0};                      // sensor clock
 };
 
 struct DecodeOptions
 {
     /* 1-based echo to publish; falls back to the first echo when the
      * telegram carries fewer. */
-    uint32_t echo_selection = 1;
+    uint32_t echo_selection{1};
 };
+
 
 /* Telegram type from the 8-byte prefix, without further validation. */
 TelegramType telegramType(std::span<const uint8_t> datagram);
 
-Error decodeImu(std::span<const uint8_t> datagram, ImuSample& out);
+Error decodeImu(std::span<const uint8_t> datagram, ImuSample& sample);
+
 
 class ScanDecoder
 {
 public:
     ScanDecoder(const PointLayout& layout, DecodeOptions options = {});
 
-    /* Validate a scan telegram and write its points to `out`, which must
+public:
+    /* Validate a scan telegram and write its points to `points`, which must
      * have room for `capacity` points of layout().pointStep() bytes each.
-     * On BufferTooSmall, info.points holds the number of points required. */
+     * On BufferTooSmall, info.num_points holds the number of points
+     * required. */
     Error decode(
         std::span<const uint8_t> datagram,
-        uint8_t* out,
+        uint8_t* points,
         size_t capacity,
         ScanInfo& info);
 
-    const PointLayout& layout() const { return point_layout; }
-    const DecodeOptions& options() const { return opts; }
+    const PointLayout& layout() const { return this->point_layout; }
+    const DecodeOptions& options() const { return this->decode_options; }
 
-private:
+protected:
+    /* One module of a validated telegram. */
     struct ModuleView
     {
-        const uint8_t* base;
-        uint32_t lines, beams, echoes;
-        uint8_t content_echoes, content_beams;
+        const uint8_t* start;
+        uint32_t num_lines;
+        uint32_t num_beams;
+        uint32_t num_echoes;
+        uint8_t echo_content;  // ECHO_HAS_* flags
+        uint8_t beam_content;  // BEAM_HAS_* flags
         float distance_scale;
-        uint32_t tuple_bytes;
-        const uint8_t* data;
+        uint32_t beam_bytes;  // one beam of one line, all echoes
+        const uint8_t* beam_data;
     };
+    using ModuleList = std::array<ModuleView, MAX_MODULES>;
 
-    struct LineShape
+    /* Where one line (layer) of a module goes in the output. */
+    struct LineGeometry
     {
         uint32_t layer_id;
-        uint32_t out_offset;  // first output point of this line
-        uint32_t
-            index_stride;  // points per segment in this layer (index = segment * stride + beam)
-        float elevation, sin_el, cos_el;
+        uint32_t first_output_point;
+        /* Points per segment in this layer: index = segment * stride +
+         * beam. */
+        uint32_t index_stride;
+        float elevation;
+        float sin_elevation;
+        float cos_elevation;
     };
 
-    // Per-line geometry depends only on the modules' shape and elevations,
-    // which only change when the sensor is reconfigured, so it's cached.
-    struct ShapeKey
+    /* Per-line geometry depends only on the modules' shape and elevations,
+     * which only change when the sensor is reconfigured, so it is cached
+     * under this key. */
+    struct GeometryKey
     {
-        std::array<uint32_t, MAX_MODULES * 3> dims{};
-        std::array<uint32_t, MAX_MODULES * NUM_LAYERS> phi_bits{};
-        bool operator==(const ShapeKey&) const = default;
+        std::array<uint32_t, MAX_MODULES * 3> dimensions{};
+        std::array<uint32_t, MAX_MODULES * NUM_LAYERS> elevation_bits{};
+        bool operator==(const GeometryKey&) const = default;
     };
 
-    void updateShape(const ModuleView* modules, size_t n_modules);
+    /* Byte offsets of the output fields (PointLayout::ABSENT: not written). */
+    struct FieldOffsets
+    {
+        int32_t x;
+        int32_t y;
+        int32_t z;
+        int32_t intensity;
+        int32_t range;
+        int32_t azimuth;
+        int32_t elevation;
+        int32_t layer;
+        int32_t echo;
+        int32_t index;
+        int32_t time;
+        int32_t reflective;
+        int32_t artifact;
+    };
 
+protected:
+    Error parseModules(
+        std::span<const uint8_t> datagram,
+        ModuleList& modules,
+        size_t& num_modules) const;
+    void updateGeometry(const ModuleList& modules, size_t num_modules);
+    void writeModulePoints(
+        const ModuleView& module,
+        const std::vector<LineGeometry>& lines,
+        uint64_t segment_index,
+        uint8_t* points,
+        uint64_t& time_min_us,
+        uint64_t& time_max_us) const;
+
+protected:
     PointLayout point_layout;
-    DecodeOptions opts;
-    ShapeKey shape_key;
-    bool shape_valid = false;
-    std::vector<std::vector<LineShape>> shape;  // [module][line]
-    uint32_t shape_points = 0;
-    uint32_t shape_first_module = 0,
-             shape_first_line = 0;  // line holding the lowest layer id
+    DecodeOptions decode_options;
+    FieldOffsets field_offsets;
+
+    // --- Cached line geometry ------------------------------------------------
+    GeometryKey geometry_key;
+    bool geometry_valid{false};
+    std::vector<std::vector<LineGeometry>> line_geometry;  // [module][line]
+    uint32_t geometry_points{0};
+    /* The line holding the lowest layer id (its start is the segment's). */
+    uint32_t first_layer_module{0};
+    uint32_t first_layer_line{0};
 };
 
 }  // namespace multiscan::compact

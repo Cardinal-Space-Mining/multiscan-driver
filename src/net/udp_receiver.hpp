@@ -49,6 +49,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -63,22 +64,25 @@ public:
     struct Datagram
     {
         std::span<const uint8_t> data;  // valid until the next receive()
-        uint64_t recv_ns = 0;           // kernel receive time, CLOCK_REALTIME
-        uint16_t port = 0;              // local port it arrived on
+        uint64_t receive_time_ns{0};    // kernel receive time, CLOCK_REALTIME
+        uint16_t port{0};               // local port it arrived on
     };
 
     static constexpr size_t MAX_DATAGRAM_BYTES = 65536;
 
+public:
     explicit UdpReceiver(size_t batch_size = 16);
     ~UdpReceiver();
+
     UdpReceiver(const UdpReceiver&) = delete;
     UdpReceiver& operator=(const UdpReceiver&) = delete;
 
+public:
     /* Bind 0.0.0.0:port for each port (duplicates ignored, 0 = any free
      * port). Returns false and sets `error` on failure. */
     bool open(
         const std::vector<uint16_t>& ports,
-        int rcvbuf_bytes,
+        int receive_buffer_bytes,
         std::string& error);
     void close();
 
@@ -91,20 +95,29 @@ public:
      * Safe to call from any thread at any time. */
     void stop();
 
-    const std::vector<uint16_t>& ports() const { return bound_ports; }
+public:
+    const std::vector<uint16_t>& ports() const { return this->bound_ports; }
     /* Receive buffer size the kernel granted (per socket, bytes). */
-    int receiveBufferBytes() const { return rcvbuf_actual; }
-    uint64_t truncatedDatagrams() const { return truncated; }
+    int receiveBufferBytes() const { return this->granted_buffer_bytes; }
+    uint64_t truncatedDatagrams() const { return this->truncated_datagrams; }
 
-private:
+protected:
     struct Socket;
-    std::vector<Socket*> sockets;
+
+protected:
+    bool
+        openSocket(uint16_t port, int receive_buffer_bytes, std::string& error);
+    /* Reads what one socket has; false on a socket error. */
+    bool readSocket(Socket& socket, std::vector<Datagram>& out);
+
+protected:
+    std::vector<std::unique_ptr<Socket>> sockets;
     std::vector<uint16_t> bound_ports;
-    size_t batch;
-    int wake_fd = -1;  // created once, lives as long as the object
+    size_t batch_size;
+    int wake_event_fd{-1};  // created once, lives as long as the object
     std::atomic<bool> stopped{false};
-    int rcvbuf_actual = 0;
-    uint64_t truncated = 0;
+    int granted_buffer_bytes{0};
+    uint64_t truncated_datagrams{0};
 };
 
 }  // namespace multiscan

@@ -39,10 +39,10 @@
 
 #include "ghost/ghost_filter.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 
 
 namespace multiscan
@@ -50,10 +50,20 @@ namespace multiscan
 
 namespace
 {
-constexpr double RAD2DEG = 180. / 3.14159265358979323846;
-constexpr uint32_t HD_LAYER_A = 5, HD_LAYER_B = 13;  // 0.125 deg layers
 
-PointLayout filterLayout()
+constexpr double RAD_TO_DEG = 180. / 3.14159265358979323846;
+
+/* The 0.125 degree layers, which aren't part of the model's grid. */
+constexpr uint32_t HIGH_RESOLUTION_LAYER_A = 5;
+constexpr uint32_t HIGH_RESOLUTION_LAYER_B = 13;
+
+/* What the multiScan's models are made for: 14 low-resolution layers, 1
+ * degree columns, 20 Hz. */
+constexpr int SENSOR_RINGS = 14;
+constexpr int SENSOR_COLUMNS = 360;
+constexpr double SENSOR_SCAN_RATE_HZ = 20.;
+
+PointLayout classifierLayout()
 {
     std::string error;
     return *PointLayout::fromNames(
@@ -61,455 +71,372 @@ PointLayout filterLayout()
         error);
 }
 
-template<typename T> T loadAt(const uint8_t* p, int32_t offset)
+template<typename T> T loadField(const uint8_t* point, int32_t offset)
 {
-    T v;
-    std::memcpy(&v, p + offset, sizeof(T));
-    return v;
+    T value;
+    std::memcpy(&value, point + offset, sizeof(T));
+    return value;
 }
+
+bool isHighResolutionLayer(uint32_t layer)
+{
+    return layer == HIGH_RESOLUTION_LAYER_A || layer == HIGH_RESOLUTION_LAYER_B;
+}
+
 }  // namespace
 
 
-// --- GhostFilter -------------------------------------------------------------
+
+// --- Setup -------------------------------------------------------------------
 
 GhostFilter::GhostFilter(artifact_filter::Model model, Config config) :
     filter{std::move(model)},
-    cfg{config},
-    thr{config.threshold >= 0. ? config.threshold : filter.model().threshold},
-    decoder{
-        filterLayout(),
+    filter_config{config},
+    flag_threshold{
+        config.threshold >= 0. ? config.threshold
+                               : this->filter.model().threshold},
+    segment_decoder{
+        classifierLayout(),
         compact::DecodeOptions{.echo_selection = config.echo_selection}}
 {
-    const artifact_filter::Model& m = filter.model();
-    // the multiScan's 14 low-resolution layers, 1 degree columns, 20 Hz
-    if (m.rings != 14 || m.cols != 360 ||
-        (m.scan_rate_hz > 0. && std::abs(m.scan_rate_hz - 20.) > 0.5))
+    const artifact_filter::Model& loaded = this->filter.model();
+    const bool rate_matches =
+        loaded.scan_rate_hz <= 0. ||
+        std::abs(loaded.scan_rate_hz - SENSOR_SCAN_RATE_HZ) <= 0.5;
+    if (loaded.num_rings != SENSOR_RINGS ||
+        loaded.num_columns != SENSOR_COLUMNS || !rate_matches)
     {
         throw std::runtime_error(
             "the model was made for another sensor (" +
-            std::to_string(m.rings) + " rings, " + std::to_string(m.cols) +
-            " columns, " + std::to_string(m.scan_rate_hz) +
+            std::to_string(loaded.num_rings) + " rings, " +
+            std::to_string(loaded.num_columns) + " columns, " +
+            std::to_string(loaded.scan_rate_hz) +
             " Hz; the multiScan has 14, 360, 20)");
     }
-    filter.early_exit(cfg.early_exit);
-    const PointLayout& L = decoder.layout();
-    o_int = L.offset(Field::Intensity);
-    o_az = L.offset(Field::Azimuth);
-    o_el = L.offset(Field::Elevation);
-    o_layer = L.offset(Field::Layer);
-    step = L.pointStep();
+    this->filter.setEarlyExit(config.early_exit);
+
+    const PointLayout& layout = this->segment_decoder.layout();
+    this->field_offsets = FieldOffsets{
+        .intensity = layout.offset(Field::Intensity),
+        .azimuth = layout.offset(Field::Azimuth),
+        .elevation = layout.offset(Field::Elevation),
+        .layer = layout.offset(Field::Layer)};
+    this->point_step = layout.pointStep();
 }
 
 void GhostFilter::reset()
 {
     // the rest of a frame in progress is left unfiltered
-    const bool was_open = open;
-    const uint64_t number = current.number;
-    current = {};
-    current.valid = current.broken = was_open;
-    current.number = number;
-    finished = {};
-    filter.reset();
+    const bool was_open = this->frame_open;
+    const uint64_t frame_number = this->current_frame.frame_number;
+    this->current_frame = {};
+    this->current_frame.valid = this->current_frame.broken = was_open;
+    this->current_frame.frame_number = frame_number;
+    this->finished_frame = {};
+    this->filter.reset();
 }
+
+
+
+// --- Segments ----------------------------------------------------------------
 
 void GhostFilter::addSegment(
     std::span<const uint8_t> datagram,
     uint64_t frame_number,
     uint32_t first_point,
-    uint32_t points,
+    uint32_t num_points,
     bool skip)
 {
-    if (!open || frame_number != current.number)
+    if (!this->frame_open || frame_number != this->current_frame.frame_number)
     {
-        // a new frame: the one before is complete (its frame, if the
-        // assembler emits it, follows)
-        if (open)
-        {
-            finishOpen();
-        }
-        current = {};
-        current.valid = true;
-        current.number = frame_number;
-        open = true;
+        this->startFrame(frame_number);
     }
-    if (current.broken)
+    if (this->current_frame.broken)
     {
         return;
     }
     if (skip)
     {
-        current.broken = current.skipped = true;
+        this->current_frame.broken = true;
+        this->current_frame.skipped = true;
+        return;
+    }
+    if (!this->decodeSegment(datagram, num_points))
+    {
+        this->current_frame.broken = true;  // not the points the frame holds
         return;
     }
 
-    if (buffer.size() < static_cast<size_t>(points) * step)
-    {
-        buffer.resize(static_cast<size_t>(points) * step);
-    }
-    compact::ScanInfo info;
-    const compact::Error err =
-        decoder.decode(datagram, buffer.data(), buffer.size() / step, info);
-    if (err != compact::Error::None || info.points != points)
-    {
-        current.broken = true;  // not the points the frame holds
-        return;
-    }
-    if (!current.begun)
-    {
-        filter.begin(static_cast<int64_t>(info.start_time_us) * 1000);
-        current.begun = true;
-    }
-
-    // Points in runs of consecutive low-resolution layer points (the decoder
-    // writes every line's beams together)
-    const uint8_t* base = buffer.data();
-    const size_t first_run = current.runs.size();
-    uint32_t i = 0;
-    while (i < points)
-    {
-        while (i < points)
-        {
-            const uint32_t layer = loadAt<uint32_t>(base + i * step, o_layer);
-            if (layer != HD_LAYER_A && layer != HD_LAYER_B)
-            {
-                break;
-            }
-            i++;
-        }
-        const uint32_t start = i;
-        while (i < points)
-        {
-            const uint32_t layer = loadAt<uint32_t>(base + i * step, o_layer);
-            if (layer == HD_LAYER_A || layer == HD_LAYER_B)
-            {
-                break;
-            }
-            i++;
-        }
-        if (i > start)
-        {
-            const uint8_t* p = base + static_cast<size_t>(start) * step;
-            filter.add(
-                i - start,
-                reinterpret_cast<const float*>(p),
-                step,
-                reinterpret_cast<const float*>(p + o_int),
-                step);
-            current.runs.push_back({first_point + start, i - start});
-        }
-    }
-    // Every beam of the segment, with or without a return, is complete now.
-    for (size_t ri = first_run; ri < current.runs.size(); ri++)
-    {
-        const Run& r = current.runs[ri];
-        const uint8_t* p =
-            base + static_cast<size_t>(r.frame_point - first_point) * step;
-        for (uint32_t k = 0; k < r.count; k++, p += step)
-        {
-            filter.cover(filter.cell_at(
-                loadAt<float>(p, o_az) * RAD2DEG,
-                loadAt<float>(p, o_el) * RAD2DEG));
-        }
-    }
-    filter.classify_ready();
+    const size_t first_run = this->current_frame.runs.size();
+    this->addLowResolutionPoints(first_point, num_points);
+    // every beam of the segment, with or without a return, is complete now
+    this->coverSegmentBeams(first_run, first_point);
+    this->filter.classifyReady();
 }
 
-void GhostFilter::finishOpen()
+/* A new frame: the one before is complete (its frame, if the assembler
+ * emits it, follows). */
+void GhostFilter::startFrame(uint64_t frame_number)
 {
-    if (current.broken || !current.begun)
+    if (this->frame_open)
+    {
+        this->finishOpenFrame();
+    }
+    this->current_frame = {};
+    this->current_frame.valid = true;
+    this->current_frame.frame_number = frame_number;
+    this->frame_open = true;
+}
+
+/* Decodes the segment into the classifier's layout, and begins the
+ * classifier's scan on the frame's first segment. */
+bool GhostFilter::decodeSegment(
+    std::span<const uint8_t> datagram,
+    uint32_t num_points)
+{
+    const size_t needed_bytes =
+        static_cast<size_t>(num_points) * this->point_step;
+    if (this->segment_points.size() < needed_bytes)
+    {
+        this->segment_points.resize(needed_bytes);
+    }
+    compact::ScanInfo info;
+    const compact::Error error = this->segment_decoder.decode(
+        datagram,
+        this->segment_points.data(),
+        this->segment_points.size() / this->point_step,
+        info);
+    if (error != compact::Error::None || info.num_points != num_points)
+    {
+        return false;
+    }
+    if (!this->current_frame.begun)
+    {
+        this->filter.begin(static_cast<int64_t>(info.start_time_us) * 1000);
+        this->current_frame.begun = true;
+    }
+    return true;
+}
+
+/* Hands the segment's points to the classifier in runs of consecutive
+ * low-resolution points (the decoder writes every line's beams together). */
+void GhostFilter::addLowResolutionPoints(
+    uint32_t first_point,
+    uint32_t num_points)
+{
+    const uint8_t* points = this->segment_points.data();
+    const auto layerOf = [&](uint32_t point)
+    {
+        return loadField<uint32_t>(
+            points + static_cast<size_t>(point) * this->point_step,
+            this->field_offsets.layer);
+    };
+
+    uint32_t point = 0;
+    while (point < num_points)
+    {
+        while (point < num_points && isHighResolutionLayer(layerOf(point)))
+        {
+            point++;
+        }
+        const uint32_t run_start = point;
+        while (point < num_points && !isHighResolutionLayer(layerOf(point)))
+        {
+            point++;
+        }
+        if (point == run_start)
+        {
+            continue;
+        }
+        const uint8_t* run =
+            points + static_cast<size_t>(run_start) * this->point_step;
+        this->filter.add(
+            point - run_start,
+            reinterpret_cast<const float*>(run),
+            this->point_step,
+            reinterpret_cast<const float*>(run + this->field_offsets.intensity),
+            this->point_step);
+        this->current_frame.runs.push_back(
+            {first_point + run_start, point - run_start});
+    }
+}
+
+/* Covers the cell of every beam added for this segment (the runs from
+ * first_run on). */
+void GhostFilter::coverSegmentBeams(size_t first_run, uint32_t first_point)
+{
+    const std::vector<PointRun>& runs = this->current_frame.runs;
+    for (size_t run = first_run; run < runs.size(); run++)
+    {
+        const uint8_t* point =
+            this->segment_points.data() +
+            static_cast<size_t>(runs[run].first_frame_point - first_point) *
+                this->point_step;
+        for (uint32_t i = 0; i < runs[run].num_points;
+             i++, point += this->point_step)
+        {
+            const float azimuth =
+                loadField<float>(point, this->field_offsets.azimuth);
+            const float elevation =
+                loadField<float>(point, this->field_offsets.elevation);
+            this->filter.cover(this->filter.cellAt(
+                azimuth * RAD_TO_DEG,
+                elevation * RAD_TO_DEG));
+        }
+    }
+}
+
+void GhostFilter::finishOpenFrame()
+{
+    if (this->current_frame.broken || !this->current_frame.begun)
     {
         // what was added is incomplete: don't compare the next frame with it
-        filter.reset();
-        current.prob.clear();
-        current.broken = true;
+        this->filter.reset();
+        this->current_frame.probability.clear();
+        this->current_frame.broken = true;
     }
     else
     {
-        filter.finish(current.prob, thr);
+        this->filter.finish(
+            this->current_frame.probability,
+            this->flag_threshold);
     }
-    finished = std::move(current);
-    current = {};
-    open = false;
+    this->finished_frame = std::move(this->current_frame);
+    this->current_frame = {};
+    this->frame_open = false;
 }
+
+
+
+// --- Frames ------------------------------------------------------------------
 
 GhostFilter::Result GhostFilter::finishFrame(
     FrameAssembler::Frame& frame,
     const PointLayout& layout)
 {
-    if (open && current.number == frame.frame_number)
+    if (this->frame_open &&
+        this->current_frame.frame_number == frame.frame_number)
     {
-        finishOpen();
+        this->finishOpenFrame();
     }
-    Result r;
-    if (!finished.valid || finished.number != frame.frame_number)
+    Result result;
+    if (!this->finished_frame.valid ||
+        this->finished_frame.frame_number != frame.frame_number)
     {
-        return r;  // the filter never saw this frame
+        return result;  // the filter never saw this frame
     }
-    FrameState done = std::move(finished);
-    finished = {};
-    r.skipped = done.skipped;
-    if (done.broken)
+    const FrameState state = std::move(this->finished_frame);
+    this->finished_frame = {};
+    result.skipped = state.skipped;
+    if (state.broken || !this->runsFitFrame(state, frame) ||
+        frame.data.size() <
+            static_cast<size_t>(frame.num_points) * layout.pointStep())
     {
-        return r;
+        return result;
     }
 
-    const uint32_t fstep = layout.pointStep();
-    const int32_t o_art = layout.offset(Field::Artifact);
-    if (frame.data.size() < static_cast<size_t>(frame.points) * fstep)
+    if (this->filter_config.mode == Mode::Drop)
     {
-        return r;
+        this->drop(state, frame, layout, result);
     }
-    for (const Run& run : done.runs)
+    else
     {
-        if (static_cast<uint64_t>(run.frame_point) + run.count > frame.points)
+        this->annotate(state, frame, layout, result);
+    }
+    result.filtered = true;
+    return result;
+}
+
+bool GhostFilter::runsFitFrame(
+    const FrameState& state,
+    const FrameAssembler::Frame& frame) const
+{
+    for (const PointRun& run : state.runs)
+    {
+        if (static_cast<uint64_t>(run.first_frame_point) + run.num_points >
+            frame.num_points)
         {
-            return r;  // doesn't match the frame
+            return false;
         }
     }
+    return true;
+}
 
-    std::vector<uint8_t> drop;
-    if (cfg.mode == Mode::Drop)
+/* Writes every classified point's probability to the artifact field. */
+void GhostFilter::annotate(
+    const FrameState& state,
+    FrameAssembler::Frame& frame,
+    const PointLayout& layout,
+    Result& result) const
+{
+    const uint32_t frame_step = layout.pointStep();
+    const int32_t artifact_offset = layout.offset(Field::Artifact);
+    size_t probability_index = 0;
+    for (const PointRun& run : state.runs)
     {
-        drop.assign(frame.points, 0);
-    }
-    size_t k = 0;
-    for (const Run& run : done.runs)
-    {
-        for (uint32_t j = 0; j < run.count; j++, k++)
+        for (uint32_t i = 0; i < run.num_points; i++, probability_index++)
         {
-            const float p = done.prob[k];
-            const uint32_t idx = run.frame_point + j;
-            r.classified += (p >= 0.f);
-            const bool flagged = p >= thr;
-            r.flagged += flagged;
-            if (cfg.mode == Mode::Drop)
+            const float probability = state.probability[probability_index];
+            result.points_classified += (probability >= 0.f);
+            result.points_flagged += (probability >= this->flag_threshold);
+            if (artifact_offset >= 0)
             {
-                drop[idx] = flagged;
-            }
-            else if (o_art >= 0)
-            {
+                const size_t frame_point = run.first_frame_point + i;
                 std::memcpy(
-                    frame.data.data() + static_cast<size_t>(idx) * fstep +
-                        o_art,
-                    &p,
-                    sizeof(p));
+                    frame.data.data() + frame_point * frame_step +
+                        artifact_offset,
+                    &probability,
+                    sizeof(probability));
             }
         }
     }
-    if (cfg.mode == Mode::Drop && r.flagged)
+}
+
+/* Removes the flagged points, keeping the order of the others. */
+void GhostFilter::drop(
+    const FrameState& state,
+    FrameAssembler::Frame& frame,
+    const PointLayout& layout,
+    Result& result) const
+{
+    std::vector<uint8_t> flagged(frame.num_points, 0);
+    size_t probability_index = 0;
+    for (const PointRun& run : state.runs)
     {
-        uint8_t* d = frame.data.data();
-        uint32_t w = 0;
-        for (uint32_t i = 0; i < frame.points; i++)
+        for (uint32_t i = 0; i < run.num_points; i++, probability_index++)
         {
-            if (drop[i])
-            {
-                continue;
-            }
-            if (w != i)
-            {
-                std::memcpy(
-                    d + static_cast<size_t>(w) * fstep,
-                    d + static_cast<size_t>(i) * fstep,
-                    fstep);
-            }
-            w++;
-        }
-        frame.points = w;
-        frame.data.resize(static_cast<size_t>(w) * fstep);
-    }
-    r.filtered = true;
-    return r;
-}
-
-
-// --- GhostFilterWorker -------------------------------------------------------
-
-GhostFilterWorker::GhostFilterWorker(
-    std::unique_ptr<GhostFilter> filter,
-    PointLayout frame_layout,
-    Publish publish_fn,
-    uint32_t backlog) :
-    ghost{std::move(filter)},
-    layout{std::move(frame_layout)},
-    publish{std::move(publish_fn)},
-    max_backlog{std::max<uint32_t>(backlog, 1)},
-    thread{&GhostFilterWorker::run, this}
-{
-}
-
-GhostFilterWorker::~GhostFilterWorker()
-{
-    {
-        std::lock_guard lock{mtx};
-        stopping = true;
-    }
-    cv.notify_all();
-    thread.join();
-}
-
-void GhostFilterWorker::push(Job&& job)
-{
-    {
-        std::lock_guard lock{mtx};
-        if (job.kind == Job::Kind::Frame)
-        {
-            queued_frames++;
-        }
-        jobs.push_back(std::move(job));
-    }
-    cv.notify_one();
-}
-
-void GhostFilterWorker::segment(
-    const compact::ScanInfo& info,
-    std::span<const uint8_t> datagram,
-    uint64_t frame_number,
-    uint32_t first_point)
-{
-    Job j;
-    j.kind = Job::Kind::Segment;
-    j.datagram.assign(datagram.begin(), datagram.end());
-    j.frame_number = frame_number;
-    j.first_point = first_point;
-    j.points = info.points;
-    push(std::move(j));
-}
-
-void GhostFilterWorker::frame(FrameAssembler::Frame&& f)
-{
-    Job j;
-    j.kind = Job::Kind::Frame;
-    j.frame = std::move(f);
-    j.queued = std::chrono::steady_clock::now();
-    push(std::move(j));
-}
-
-void GhostFilterWorker::reset()
-{
-    Job j;
-    j.kind = Job::Kind::Reset;
-    push(std::move(j));
-}
-
-void GhostFilterWorker::drain()
-{
-    std::unique_lock lock{mtx};
-    idle_cv.wait(lock, [this] { return (jobs.empty() && !busy) || stopping; });
-}
-
-GhostFilterWorker::Stats GhostFilterWorker::takeStats()
-{
-    std::lock_guard lock{mtx};
-    Stats s = stats;
-    stats.window_frames = 0;
-    stats.window_delay_sum_ns = stats.window_delay_max_ns = 0;
-    stats.window_work_sum_ns = stats.window_work_max_ns = 0;
-    return s;
-}
-
-void GhostFilterWorker::run()
-{
-    using Clock = std::chrono::steady_clock;
-    const auto ns = [](Clock::duration d)
-    {
-        return static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(d).count());
-    };
-    for (;;)
-    {
-        Job job;
-        bool skip = false;
-        {
-            std::unique_lock lock{mtx};
-            cv.wait(lock, [this] { return !jobs.empty() || stopping; });
-            if (stopping)
-            {
-                break;
-            }
-            job = std::move(jobs.front());
-            jobs.pop_front();
-            if (job.kind == Job::Kind::Frame)
-            {
-                queued_frames--;
-            }
-            skip = queued_frames >= max_backlog;
-            busy = true;
-        }
-
-        const Clock::time_point t0 = Clock::now();
-        switch (job.kind)
-        {
-            case Job::Kind::Segment:
-                try
-                {
-                    ghost->addSegment(
-                        job.datagram,
-                        job.frame_number,
-                        job.first_point,
-                        job.points,
-                        skip);
-                }
-                catch (const std::exception&)
-                {
-                    ghost->reset();
-                }
-                work_ns += ns(Clock::now() - t0);
-                break;
-            case Job::Kind::Frame:
-            {
-                GhostFilter::Result res;
-                try
-                {
-                    res = ghost->finishFrame(job.frame, layout);
-                }
-                catch (const std::exception&)
-                {
-                    ghost->reset();
-                    res = {};
-                }
-                const Clock::time_point t1 = Clock::now();
-                const uint64_t work = work_ns + ns(t1 - t0);
-                const uint64_t delay = ns(t1 - job.queued);
-                work_ns = 0;
-                publish(job.frame, res);
-                std::lock_guard lock{mtx};
-                if (res.filtered)
-                {
-                    stats.frames_filtered++;
-                    stats.points_classified += res.classified;
-                    stats.points_flagged += res.flagged;
-                    stats.window_frames++;
-                    stats.window_delay_sum_ns += delay;
-                    stats.window_delay_max_ns =
-                        std::max(stats.window_delay_max_ns, delay);
-                    stats.window_work_sum_ns += work;
-                    stats.window_work_max_ns =
-                        std::max(stats.window_work_max_ns, work);
-                }
-                else
-                {
-                    stats.frames_unfiltered++;
-                    stats.frames_overloaded += res.skipped;
-                }
-                break;
-            }
-            case Job::Kind::Reset:
-                ghost->reset();
-                work_ns = 0;
-                break;
-        }
-
-        std::lock_guard lock{mtx};
-        busy = false;
-        if (jobs.empty())
-        {
-            idle_cv.notify_all();
+            const float probability = state.probability[probability_index];
+            const bool is_artifact = probability >= this->flag_threshold;
+            result.points_classified += (probability >= 0.f);
+            result.points_flagged += is_artifact;
+            flagged[run.first_frame_point + i] = is_artifact;
         }
     }
-    std::lock_guard lock{mtx};
-    busy = false;
-    idle_cv.notify_all();
+    if (!result.points_flagged)
+    {
+        return;
+    }
+
+    const uint32_t frame_step = layout.pointStep();
+    uint8_t* data = frame.data.data();
+    uint32_t kept = 0;
+    for (uint32_t point = 0; point < frame.num_points; point++)
+    {
+        if (flagged[point])
+        {
+            continue;
+        }
+        if (kept != point)
+        {
+            std::memcpy(
+                data + static_cast<size_t>(kept) * frame_step,
+                data + static_cast<size_t>(point) * frame_step,
+                frame_step);
+        }
+        kept++;
+    }
+    frame.num_points = kept;
+    frame.data.resize(static_cast<size_t>(kept) * frame_step);
 }
 
 }  // namespace multiscan

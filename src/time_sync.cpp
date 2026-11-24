@@ -48,167 +48,210 @@ namespace multiscan
 
 ClockEstimator::ClockEstimator() : ClockEstimator(Config{}) {}
 
-ClockEstimator::ClockEstimator(Config config) : cfg{config} {}
+ClockEstimator::ClockEstimator(Config config) : config{config} {}
 
 void ClockEstimator::reset()
 {
-    block_open = false;
-    minima.clear();
-    step_streak = 0;
-    step_sign = 0;
-    jump_streak = 0;
-    have_estimate = false;
-    have_fit = false;
-    slope = 0.;
-}
-
-int64_t ClockEstimator::predict(uint64_t host_ns) const
-{
-    const double dt =
-        static_cast<double>(static_cast<int64_t>(host_ns - ref_ns));
-    return base_ns + static_cast<int64_t>(std::llround(base_frac + slope * dt));
+    this->block_open = false;
+    this->block_minima.clear();
+    this->step_streak = 0;
+    this->step_sign = 0;
+    this->jump_streak = 0;
+    this->has_estimate = false;
+    this->has_fit = false;
+    this->fit_slope = 0.;
 }
 
 int64_t ClockEstimator::offsetNs(uint64_t host_ns) const
 {
-    if (!have_estimate)
+    if (!this->has_estimate)
     {
         return 0;
     }
-    if (!have_fit)
+    if (!this->has_fit)
     {
-        return block_min.d;  // first block: its running minimum
+        // first block: its running minimum
+        return this->block_minimum.difference_ns;
     }
-    return predict(host_ns);
+    return this->predict(host_ns);
 }
 
 void ClockEstimator::add(uint64_t sensor_us, uint64_t host_ns)
 {
-    const int64_t d =
+    const int64_t difference_ns =
         static_cast<int64_t>(host_ns) - static_cast<int64_t>(sensor_us * 1000);
-    counters.samples++;
+    this->statistics.samples++;
+    if (this->acceptSample(difference_ns, host_ns))
+    {
+        this->addToBlock(difference_ns, host_ns);
+    }
+}
 
-    if (have_estimate)
+/* Detects clock jumps against the estimate. Returns false for a sample that
+ * is ignored (a stray late datagram, or the start of a jump). */
+bool ClockEstimator::acceptSample(int64_t difference_ns, uint64_t host_ns)
+{
+    if (!this->has_estimate)
     {
-        const int64_t delay = d - offsetNs(host_ns);
-        if (delay < -cfg.jump_ns)
-        {
-            reset();  // arrived before it was sent: the clocks jumped
-            counters.restarts++;
-        }
-        else if (delay > cfg.jump_ns)
-        {
-            if (++jump_streak >= cfg.jump_samples)
-            {
-                reset();
-                counters.restarts++;
-            }
-            else
-            {
-                return;  // a stray late datagram, or the start of a jump
-            }
-        }
-        else
-        {
-            jump_streak = 0;
-        }
+        return true;
     }
+    const int64_t delay_ns = difference_ns - this->offsetNs(host_ns);
+    if (delay_ns < -this->config.jump_ns)
+    {
+        // arrived before it was sent: the clocks jumped
+        this->reset();
+        this->statistics.restarts++;
+    }
+    else if (delay_ns > this->config.jump_ns)
+    {
+        if (++this->jump_streak < this->config.jump_samples)
+        {
+            return false;
+        }
+        this->reset();
+        this->statistics.restarts++;
+    }
+    else
+    {
+        this->jump_streak = 0;
+    }
+    return true;
+}
 
-    if (block_open && host_ns - block_start_ns >= cfg.block_ns)
+void ClockEstimator::addToBlock(int64_t difference_ns, uint64_t host_ns)
+{
+    if (this->block_open &&
+        host_ns - this->block_start_ns >= this->config.block_ns)
     {
-        closeBlock();
+        this->closeBlock();
     }
-    if (!block_open)
+    if (!this->block_open)
     {
-        block_open = true;
-        block_start_ns = host_ns;
-        block_min = {host_ns, d};
-        block_max_delay = 0;
+        this->block_open = true;
+        this->block_start_ns = host_ns;
+        this->block_minimum = {host_ns, difference_ns};
+        this->block_max_delay_ns = 0;
     }
-    else if (d < block_min.d)
+    else if (difference_ns < this->block_minimum.difference_ns)
     {
-        block_min = {host_ns, d};
+        this->block_minimum = {host_ns, difference_ns};
     }
-    if (have_fit)
+    if (this->has_fit)
     {
-        block_max_delay = std::max(block_max_delay, d - predict(host_ns));
+        this->block_max_delay_ns = std::max(
+            this->block_max_delay_ns,
+            difference_ns - this->predict(host_ns));
     }
-    have_estimate = true;
+    this->has_estimate = true;
 }
 
 void ClockEstimator::closeBlock()
 {
-    block_open = false;
-    if (have_fit)
+    this->block_open = false;
+    if (this->has_fit)
     {
-        counters.block_min_delay_ns = block_min.d - predict(block_min.host_ns);
-        counters.block_max_delay_ns = block_max_delay;
-
-        // a step: several blocks in a row off the line in the same direction
-        const int64_t r = counters.block_min_delay_ns;
-        const int sign = r > cfg.step_ns ? 1 : (r < -cfg.step_ns ? -1 : 0);
-        if (sign != 0 && sign == step_sign)
-        {
-            step_streak++;
-        }
-        else
-        {
-            step_streak = sign != 0 ? 1 : 0;
-        }
-        step_sign = sign;
-        if (step_streak >= cfg.step_blocks)
-        {
-            // keep only the blocks after the step
-            const size_t keep = cfg.step_blocks - 1;
-            while (minima.size() > keep)
-            {
-                minima.pop_front();
-            }
-            step_streak = 0;
-            step_sign = 0;
-            counters.steps++;
-        }
+        this->statistics.block_min_delay_ns =
+            this->block_minimum.difference_ns -
+            this->predict(this->block_minimum.host_ns);
+        this->statistics.block_max_delay_ns = this->block_max_delay_ns;
+        this->detectStep();
     }
-    minima.push_back(block_min);
-    while (minima.size() > cfg.window_blocks)
+    this->block_minima.push_back(this->block_minimum);
+    while (this->block_minima.size() > this->config.window_blocks)
     {
-        minima.pop_front();
+        this->block_minima.pop_front();
     }
-    fit();
+    this->fit();
 }
 
+/* A step: several blocks in a row off the line in the same direction. Only
+ * the blocks after it are kept. */
+void ClockEstimator::detectStep()
+{
+    const int64_t residual_ns = this->statistics.block_min_delay_ns;
+    const int sign = residual_ns > this->config.step_ns
+                         ? 1
+                         : (residual_ns < -this->config.step_ns ? -1 : 0);
+    if (sign != 0 && sign == this->step_sign)
+    {
+        this->step_streak++;
+    }
+    else
+    {
+        this->step_streak = sign != 0 ? 1 : 0;
+    }
+    this->step_sign = sign;
+
+    if (this->step_streak >= this->config.step_blocks)
+    {
+        const size_t keep = this->config.step_blocks - 1;
+        while (this->block_minima.size() > keep)
+        {
+            this->block_minima.pop_front();
+        }
+        this->step_streak = 0;
+        this->step_sign = 0;
+        this->statistics.steps++;
+    }
+}
+
+/* Least squares through the block minima, relative to the newest one
+ * (keeps the doubles small). */
 void ClockEstimator::fit()
 {
-    // least squares through the block minima, relative to the newest one
-    // (keeps the doubles small)
-    const Point& last = minima.back();
-    ref_ns = last.host_ns;
-    const size_t n = minima.size();
-    double st = 0., sd = 0.;
-    for (const auto& p : minima)
+    const BlockMinimum& newest = this->block_minima.back();
+    this->fit_reference_ns = newest.host_ns;
+    const auto timeOf = [this](const BlockMinimum& minimum)
     {
-        st += static_cast<double>(static_cast<int64_t>(p.host_ns - ref_ns));
-        sd += static_cast<double>(p.d - last.d);
-    }
-    const double mt = st / n, md = sd / n;
-    double stt = 0., std_ = 0.;
-    for (const auto& p : minima)
+        return static_cast<double>(
+            static_cast<int64_t>(minimum.host_ns - this->fit_reference_ns));
+    };
+    const auto differenceOf = [&newest](const BlockMinimum& minimum)
     {
-        const double t =
-            static_cast<double>(static_cast<int64_t>(p.host_ns - ref_ns)) - mt;
-        stt += t * t;
-        std_ += t * (static_cast<double>(p.d - last.d) - md);
-    }
-    slope = (n >= 2 && stt > 0.) ? std_ / stt : 0.;
-    if (std::abs(slope) > cfg.max_drift)
+        return static_cast<double>(
+            minimum.difference_ns - newest.difference_ns);
+    };
+
+    const size_t num_minima = this->block_minima.size();
+    double sum_time = 0.;
+    double sum_difference = 0.;
+    for (const BlockMinimum& minimum : this->block_minima)
     {
-        slope = 0.;
+        sum_time += timeOf(minimum);
+        sum_difference += differenceOf(minimum);
     }
-    // line value at ref_ns (t = 0); the offset itself is ~1e18 ns, too
-    // large for a double to hold to the nanosecond
-    base_ns = last.d;
-    base_frac = md - slope * mt;
-    have_fit = true;
+    const double mean_time = sum_time / num_minima;
+    const double mean_difference = sum_difference / num_minima;
+
+    double sum_time_squared = 0.;
+    double sum_time_difference = 0.;
+    for (const BlockMinimum& minimum : this->block_minima)
+    {
+        const double time = timeOf(minimum) - mean_time;
+        sum_time_squared += time * time;
+        sum_time_difference += time * (differenceOf(minimum) - mean_difference);
+    }
+    this->fit_slope = (num_minima >= 2 && sum_time_squared > 0.)
+                          ? sum_time_difference / sum_time_squared
+                          : 0.;
+    if (std::abs(this->fit_slope) > this->config.max_drift)
+    {
+        this->fit_slope = 0.;
+    }
+    // line value at fit_reference_ns (t = 0); the offset itself is ~1e18 ns,
+    // too large for a double to hold to the nanosecond
+    this->fit_base_ns = newest.difference_ns;
+    this->fit_base_fraction_ns = mean_difference - this->fit_slope * mean_time;
+    this->has_fit = true;
+}
+
+int64_t ClockEstimator::predict(uint64_t host_ns) const
+{
+    const double elapsed_ns = static_cast<double>(
+        static_cast<int64_t>(host_ns - this->fit_reference_ns));
+    return this->fit_base_ns +
+           static_cast<int64_t>(std::llround(
+               this->fit_base_fraction_ns + this->fit_slope * elapsed_ns));
 }
 
 }  // namespace multiscan

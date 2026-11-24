@@ -43,7 +43,6 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
-#include <numeric>
 
 #include <zlib.h>
 
@@ -54,34 +53,82 @@ namespace multiscan::compact
 namespace
 {
 
-template<typename T> inline T load(const uint8_t* p)
+// --- Byte access -------------------------------------------------------------
+
+template<typename T> inline T load(const uint8_t* bytes)
 {
-    T v;
-    std::memcpy(&v, p, sizeof(T));
-    return v;
+    T value;
+    std::memcpy(&value, bytes, sizeof(T));
+    return value;
 }
 
-template<typename T> inline void store(uint8_t* p, int32_t offset, T v)
+/* Stores a field of a point unless the layout doesn't have it. */
+template<typename T> inline void store(uint8_t* point, int32_t offset, T value)
 {
     if (offset >= 0)
     {
-        std::memcpy(p + offset, &v, sizeof(T));
+        std::memcpy(point + offset, &value, sizeof(T));
     }
 }
 
-inline bool hasStartSequence(std::span<const uint8_t> b)
+inline bool hasStartSequence(std::span<const uint8_t> datagram)
 {
-    return b.size() >= 4 && b[0] == 0x02 && b[1] == 0x02 && b[2] == 0x02 &&
-           b[3] == 0x02;
+    return datagram.size() >= 4 && datagram[0] == 0x02 && datagram[1] == 0x02 &&
+           datagram[2] == 0x02 && datagram[3] == 0x02;
 }
 
-inline bool crcValid(std::span<const uint8_t> b)
+inline bool crcValid(std::span<const uint8_t> datagram)
 {
-    const uint32_t stored = load<uint32_t>(b.data() + b.size() - 4);
+    const size_t covered_bytes = datagram.size() - 4;
+    const uint32_t stored = load<uint32_t>(datagram.data() + covered_bytes);
     return stored ==
            static_cast<uint32_t>(
-               ::crc32(0L, b.data(), static_cast<uInt>(b.size() - 4)));
+               ::crc32(0L, datagram.data(), static_cast<uInt>(covered_bytes)));
 }
+
+
+// --- Telegram layout ---------------------------------------------------------
+
+// scan telegram header
+constexpr size_t HEADER_TYPE_OFFSET = 4;
+constexpr size_t HEADER_COUNTER_OFFSET = 8;
+constexpr size_t HEADER_TRANSMIT_TIME_OFFSET = 16;
+constexpr size_t HEADER_VERSION_OFFSET = 24;
+constexpr size_t HEADER_FIRST_MODULE_SIZE_OFFSET = 28;
+
+// IMU telegram
+constexpr size_t IMU_VERSION_OFFSET = 8;
+constexpr size_t IMU_DATA_OFFSET = 12;
+
+// module metadata (telegram version 4), relative to the module start
+constexpr size_t MODULE_SEGMENT_OFFSET = 0;
+constexpr size_t MODULE_FRAME_OFFSET = 8;
+constexpr size_t MODULE_SENDER_OFFSET = 16;
+constexpr size_t MODULE_LINES_OFFSET = 20;
+constexpr size_t MODULE_BEAMS_OFFSET = 24;
+constexpr size_t MODULE_ECHOES_OFFSET = 28;
+/* Per-line arrays follow: start time (8 bytes), stop time (8), elevation
+ * phi (4), azimuth theta start (4) and stop (4); then the module tail. */
+constexpr size_t MODULE_ARRAYS_OFFSET = 32;
+constexpr size_t LINE_ARRAY_BYTES = 28;
+constexpr size_t MODULE_TAIL_BYTES = 12;
+
+inline size_t metadataBytes(uint32_t num_lines)
+{
+    return MODULE_ARRAYS_OFFSET + num_lines * LINE_ARRAY_BYTES +
+           MODULE_TAIL_BYTES;
+}
+
+constexpr uint8_t ECHO_HAS_DISTANCE = 0x01;
+constexpr uint8_t ECHO_HAS_RSSI = 0x02;
+constexpr uint8_t BEAM_HAS_PROPERTIES = 0x01;
+constexpr uint8_t BEAM_HAS_AZIMUTH = 0x02;
+
+constexpr uint32_t MAX_BEAMS = 4096;
+constexpr uint32_t MAX_ECHOES = 3;
+
+
+// --- Layer ids ---------------------------------------------------------------
 
 /* Elevation of the 16 layers (mdeg, sign of phi) used to assign layer ids,
  * nearest match. Layer ids are what consumers (net_adapter codec) key on. */
@@ -105,37 +152,29 @@ constexpr std::array<int, NUM_LAYERS> LAYER_ELEVATION_MDEG = {
 
 uint32_t layerIdFromPhi(float phi_rad)
 {
-    const int mdeg = static_cast<int>(
+    const int millidegrees = static_cast<int>(
         std::lround(phi_rad * 180000 / 3.14159265358979323846));
     uint32_t best = 0;
-    for (uint32_t i = 1; i < NUM_LAYERS; i++)
+    for (uint32_t layer = 1; layer < NUM_LAYERS; layer++)
     {
-        if (std::abs(mdeg - LAYER_ELEVATION_MDEG[i]) <
-            std::abs(mdeg - LAYER_ELEVATION_MDEG[best]))
+        if (std::abs(millidegrees - LAYER_ELEVATION_MDEG[layer]) <
+            std::abs(millidegrees - LAYER_ELEVATION_MDEG[best]))
         {
-            best = i;
+            best = layer;
         }
     }
     return best;
 }
 
-// module metadata layout (telegram version 4), relative to the module start
-constexpr size_t M_SEGMENT = 0, M_FRAME = 8, M_SENDER = 16, M_LINES = 20,
-                 M_BEAMS = 24, M_ECHOES = 28, M_ARRAYS = 32;
-inline size_t metadataBytes(uint32_t lines)
-{
-    return M_ARRAYS + lines * 28 + 12;
-}
-
-constexpr uint8_t ECHO_HAS_DISTANCE = 0x01, ECHO_HAS_RSSI = 0x02;
-constexpr uint8_t BEAM_HAS_PROPERTIES = 0x01, BEAM_HAS_AZIMUTH = 0x02;
-
 }  // namespace
 
 
-const char* toString(Error e)
+
+// --- Free functions ----------------------------------------------------------
+
+const char* toString(Error error)
 {
-    switch (e)
+    switch (error)
     {
         case Error::None:
             return "ok";
@@ -161,348 +200,435 @@ const char* toString(Error e)
     return "?";
 }
 
-TelegramType telegramType(std::span<const uint8_t> b)
+TelegramType telegramType(std::span<const uint8_t> datagram)
 {
-    if (b.size() < 8 || !hasStartSequence(b))
+    if (datagram.size() < 8 || !hasStartSequence(datagram))
     {
         return TelegramType::Unknown;
     }
-    const uint32_t t = load<uint32_t>(b.data() + 4);
-    return (t == 1 || t == 2) ? static_cast<TelegramType>(t)
-                              : TelegramType::Unknown;
+    const uint32_t type = load<uint32_t>(datagram.data() + HEADER_TYPE_OFFSET);
+    return (type == 1 || type == 2) ? static_cast<TelegramType>(type)
+                                    : TelegramType::Unknown;
 }
 
-Error decodeImu(std::span<const uint8_t> b, ImuSample& out)
+Error decodeImu(std::span<const uint8_t> datagram, ImuSample& sample)
 {
-    if (b.size() < 8)
+    if (datagram.size() < 8)
     {
         return Error::TooShort;
     }
-    if (!hasStartSequence(b))
+    if (!hasStartSequence(datagram))
     {
         return Error::BadStartSequence;
     }
-    if (load<uint32_t>(b.data() + 4) !=
+    if (load<uint32_t>(datagram.data() + HEADER_TYPE_OFFSET) !=
         static_cast<uint32_t>(TelegramType::Imu))
     {
         return Error::UnknownTelegramType;
     }
-    if (b.size() != IMU_TELEGRAM_BYTES)
+    if (datagram.size() != IMU_TELEGRAM_BYTES)
     {
         return Error::BadModuleChain;
     }
-    if (!crcValid(b))
+    if (!crcValid(datagram))
     {
         return Error::BadCrc;
     }
-    if (load<uint32_t>(b.data() + 8) != IMU_TELEGRAM_VERSION)
+    if (load<uint32_t>(datagram.data() + IMU_VERSION_OFFSET) !=
+        IMU_TELEGRAM_VERSION)
     {
         return Error::UnsupportedVersion;
     }
-    const uint8_t* p = b.data() + 12;
-    for (float& v : out.acceleration)
+
+    const uint8_t* value = datagram.data() + IMU_DATA_OFFSET;
+    const auto readFloats = [&value](auto& out)
     {
-        v = load<float>(p);
-        p += 4;
-    }
-    for (float& v : out.angular_velocity)
-    {
-        v = load<float>(p);
-        p += 4;
-    }
-    for (float& v : out.orientation)
-    {
-        v = load<float>(p);
-        p += 4;
-    }
-    out.time_us = load<uint64_t>(p);
+        for (float& element : out)
+        {
+            element = load<float>(value);
+            value += 4;
+        }
+    };
+    readFloats(sample.acceleration);
+    readFloats(sample.angular_velocity);
+    readFloats(sample.orientation);
+    sample.time_us = load<uint64_t>(value);
     return Error::None;
 }
 
 
+
+// --- ScanDecoder -------------------------------------------------------------
+
 ScanDecoder::ScanDecoder(const PointLayout& layout, DecodeOptions options) :
     point_layout{layout},
-    opts{options}
+    decode_options{options},
+    field_offsets{
+        .x = layout.offset(Field::X),
+        .y = layout.offset(Field::Y),
+        .z = layout.offset(Field::Z),
+        .intensity = layout.offset(Field::Intensity),
+        .range = layout.offset(Field::Range),
+        .azimuth = layout.offset(Field::Azimuth),
+        .elevation = layout.offset(Field::Elevation),
+        .layer = layout.offset(Field::Layer),
+        .echo = layout.offset(Field::Echo),
+        .index = layout.offset(Field::Index),
+        .time = layout.offset(Field::Time),
+        .reflective = layout.offset(Field::Reflective),
+        .artifact = layout.offset(Field::Artifact)}
 {
-}
-
-void ScanDecoder::updateShape(const ModuleView* modules, size_t n_modules)
-{
-    ShapeKey key;
-    for (size_t m = 0; m < n_modules; m++)
-    {
-        key.dims[m * 3 + 0] = modules[m].lines;
-        key.dims[m * 3 + 1] = modules[m].beams;
-        key.dims[m * 3 + 2] = modules[m].echoes;
-        const uint8_t* phi = modules[m].base + M_ARRAYS + modules[m].lines * 16;
-        std::memcpy(&key.phi_bits[m * NUM_LAYERS], phi, modules[m].lines * 4);
-    }
-    if (shape_valid && key == shape_key)
-    {
-        return;
-    }
-
-    struct Ref
-    {
-        uint32_t module, line, layer, beams;
-    };
-    std::vector<Ref> refs;
-    shape.assign(n_modules, {});
-    for (uint32_t m = 0; m < n_modules; m++)
-    {
-        const ModuleView& mv = modules[m];
-        const uint8_t* phi = mv.base + M_ARRAYS + mv.lines * 16;
-        shape[m].resize(mv.lines);
-        for (uint32_t l = 0; l < mv.lines; l++)
-        {
-            const float p = load<float>(phi + l * 4);
-            LineShape& ls = shape[m][l];
-            ls.layer_id = layerIdFromPhi(p);
-            ls.elevation =
-                -p;  // DIN ISO 8855 phi is positive below the horizon
-            ls.sin_el = std::sin(ls.elevation);
-            ls.cos_el = std::cos(ls.elevation);
-            refs.push_back({m, l, ls.layer_id, mv.beams});
-        }
-    }
-    // layers in ascending id; lines sharing an id stay in packet order
-    std::stable_sort(
-        refs.begin(),
-        refs.end(),
-        [](const Ref& a, const Ref& b) { return a.layer < b.layer; });
-    std::array<uint32_t, NUM_LAYERS> layer_points{};
-    for (const Ref& r : refs)
-    {
-        layer_points[r.layer] += r.beams;
-    }
-    uint32_t off = 0;
-    for (const Ref& r : refs)
-    {
-        LineShape& ls = shape[r.module][r.line];
-        ls.out_offset = off;
-        ls.index_stride = layer_points[r.layer];
-        off += r.beams;
-    }
-    shape_points = off;
-    shape_first_module = refs.empty() ? 0 : refs.front().module;
-    shape_first_line = refs.empty() ? 0 : refs.front().line;
-    shape_key = key;
-    shape_valid = true;
 }
 
 Error ScanDecoder::decode(
-    std::span<const uint8_t> b,
-    uint8_t* out,
+    std::span<const uint8_t> datagram,
+    uint8_t* points,
     size_t capacity,
     ScanInfo& info)
 {
-    // --- framing -------------------------------------------------------------
-    if (b.size() < SCAN_HEADER_BYTES + 4)
+    // --- Framing ---
+    if (datagram.size() < SCAN_HEADER_BYTES + 4)
     {
         return Error::TooShort;
     }
-    if (!hasStartSequence(b))
+    if (!hasStartSequence(datagram))
     {
         return Error::BadStartSequence;
     }
-    if (load<uint32_t>(b.data() + 4) !=
+    if (load<uint32_t>(datagram.data() + HEADER_TYPE_OFFSET) !=
         static_cast<uint32_t>(TelegramType::Scan))
     {
         return Error::UnknownTelegramType;
     }
-    if (!crcValid(b))
+    if (!crcValid(datagram))
     {
         return Error::BadCrc;
     }
-    if (load<uint32_t>(b.data() + 24) != SCAN_TELEGRAM_VERSION)
+    if (load<uint32_t>(datagram.data() + HEADER_VERSION_OFFSET) !=
+        SCAN_TELEGRAM_VERSION)
     {
         return Error::UnsupportedVersion;
     }
 
     info = ScanInfo{};
-    info.telegram_counter = load<uint64_t>(b.data() + 8);
-    info.transmit_time_us = load<uint64_t>(b.data() + 16);
+    info.telegram_counter =
+        load<uint64_t>(datagram.data() + HEADER_COUNTER_OFFSET);
+    info.transmit_time_us =
+        load<uint64_t>(datagram.data() + HEADER_TRANSMIT_TIME_OFFSET);
 
-    // --- module chain ----------------------------------------------------------
-    std::array<ModuleView, MAX_MODULES> modules;
-    size_t n_modules = 0;
-    const size_t end = b.size() - 4;
-    size_t off = SCAN_HEADER_BYTES;
-    uint64_t module_size = load<uint32_t>(b.data() + 28);
-    while (module_size)
+    // --- Modules ---
+    ModuleList modules;
+    size_t num_modules = 0;
+    if (const Error error = this->parseModules(datagram, modules, num_modules);
+        error != Error::None)
     {
-        if (n_modules == MAX_MODULES || off + module_size > end ||
-            module_size < M_ARRAYS)
-        {
-            return Error::BadModuleChain;
-        }
-        ModuleView& mv = modules[n_modules++];
-        mv.base = b.data() + off;
-        mv.lines = load<uint32_t>(mv.base + M_LINES);
-        mv.beams = load<uint32_t>(mv.base + M_BEAMS);
-        mv.echoes = load<uint32_t>(mv.base + M_ECHOES);
-        if (mv.lines < 1 || mv.lines > NUM_LAYERS || mv.beams < 1 ||
-            mv.beams > 4096 || mv.echoes < 1 || mv.echoes > 3)
-        {
-            return Error::BadModuleHeader;
-        }
-        const size_t meta = metadataBytes(mv.lines);
-        if (module_size < meta)
-        {
-            return Error::BadModuleSize;
-        }
-        const uint8_t* tail = mv.base + M_ARRAYS + mv.lines * 28;
-        mv.distance_scale = load<float>(tail);
-        const uint32_t next = load<uint32_t>(tail + 4);
-        mv.content_echoes = tail[9];
-        mv.content_beams = tail[10];
-        const uint32_t per_echo =
-            ((mv.content_echoes & ECHO_HAS_DISTANCE) ? 2u : 0u) +
-            ((mv.content_echoes & ECHO_HAS_RSSI) ? 2u : 0u);
-        mv.tuple_bytes = per_echo * mv.echoes +
-                         ((mv.content_beams & BEAM_HAS_PROPERTIES) ? 1u : 0u) +
-                         ((mv.content_beams & BEAM_HAS_AZIMUTH) ? 2u : 0u);
-        if (meta +
-                static_cast<uint64_t>(mv.tuple_bytes) * mv.lines * mv.beams !=
-            module_size)
-        {
-            return Error::BadModuleSize;
-        }
-        mv.data = mv.base + meta;
-        off += module_size;
-        module_size = next;
+        return error;
     }
-    if (off != end || n_modules == 0)
-    {
-        return Error::BadModuleChain;
-    }
+    const uint8_t* first_module = modules[0].start;
+    info.segment_index = load<uint64_t>(first_module + MODULE_SEGMENT_OFFSET);
+    info.frame_number = load<uint64_t>(first_module + MODULE_FRAME_OFFSET);
+    info.sender_id = load<uint32_t>(first_module + MODULE_SENDER_OFFSET);
 
-    info.segment = load<uint64_t>(modules[0].base + M_SEGMENT);
-    info.frame = load<uint64_t>(modules[0].base + M_FRAME);
-    info.sender_id = load<uint32_t>(modules[0].base + M_SENDER);
-
-    updateShape(modules.data(), n_modules);
-    info.points = shape_points;
-    {
-        const ModuleView& fm = modules[shape_first_module];
-        info.start_time_us =
-            load<uint64_t>(fm.base + M_ARRAYS + shape_first_line * 8);
-    }
-    if (capacity < shape_points)
+    this->updateGeometry(modules, num_modules);
+    info.num_points = this->geometry_points;
+    info.start_time_us = load<uint64_t>(
+        modules[this->first_layer_module].start + MODULE_ARRAYS_OFFSET +
+        this->first_layer_line * 8);
+    if (capacity < this->geometry_points)
     {
         return Error::BufferTooSmall;
     }
 
-    // --- points ----------------------------------------------------------------
-    const PointLayout& L = point_layout;
-    const uint32_t step = L.pointStep();
-    const int32_t o_x = L.offset(Field::X), o_y = L.offset(Field::Y),
-                  o_z = L.offset(Field::Z), o_int = L.offset(Field::Intensity),
-                  o_rng = L.offset(Field::Range),
-                  o_az = L.offset(Field::Azimuth),
-                  o_el = L.offset(Field::Elevation),
-                  o_layer = L.offset(Field::Layer),
-                  o_echo = L.offset(Field::Echo),
-                  o_idx = L.offset(Field::Index), o_t = L.offset(Field::Time),
-                  o_refl = L.offset(Field::Reflective),
-                  o_art = L.offset(Field::Artifact);
-
-    uint64_t t_min = std::numeric_limits<uint64_t>::max(), t_max = 0;
-    for (size_t m = 0; m < n_modules; m++)
+    // --- Points ---
+    uint64_t time_min_us = std::numeric_limits<uint64_t>::max();
+    uint64_t time_max_us = 0;
+    for (size_t module = 0; module < num_modules; module++)
     {
-        const ModuleView& mv = modules[m];
-        const std::vector<LineShape>& lines = shape[m];
-        const uint8_t* ts_start = mv.base + M_ARRAYS;
-        const uint8_t* ts_stop = ts_start + mv.lines * 8;
-        const uint8_t* theta_start =
-            ts_stop + mv.lines * 12;  // after time stop and phi
-        const uint8_t* theta_stop = theta_start + mv.lines * 4;
+        this->writeModulePoints(
+            modules[module],
+            this->line_geometry[module],
+            info.segment_index,
+            points,
+            time_min_us,
+            time_max_us);
+    }
+    info.time_min_us = time_min_us;
+    info.time_max_us = time_max_us;
+    return Error::None;
+}
 
-        const uint32_t echo =
-            (opts.echo_selection >= 1 && opts.echo_selection <= mv.echoes)
-                ? opts.echo_selection - 1
-                : 0;
-        const bool has_dist = mv.content_echoes & ECHO_HAS_DISTANCE;
-        const bool has_rssi = mv.content_echoes & ECHO_HAS_RSSI;
-        const bool has_prop = mv.content_beams & BEAM_HAS_PROPERTIES;
-        const bool has_az = mv.content_beams & BEAM_HAS_AZIMUTH;
-        const uint32_t per_echo = (has_dist ? 2u : 0u) + (has_rssi ? 2u : 0u);
-        const uint32_t dist_off = per_echo * echo;
-        const uint32_t rssi_off = dist_off + (has_dist ? 2u : 0u);
-        const uint32_t prop_off = per_echo * mv.echoes;
-        const uint32_t az_off = prop_off + (has_prop ? 1u : 0u);
-        const float beams_m1 =
-            static_cast<float>(std::max(1, static_cast<int>(mv.beams) - 1));
-        const uint64_t beams_m1_u = std::max<uint64_t>(1, mv.beams - 1);
-
-        std::array<float, NUM_LAYERS> az_start{}, az_delta{};
-        std::array<uint64_t, NUM_LAYERS> t0{}, dt{};
-        for (uint32_t l = 0; l < mv.lines; l++)
+/* Walks the module chain and checks that every module's size matches its
+ * metadata, and that the modules exactly fill the datagram. */
+Error ScanDecoder::parseModules(
+    std::span<const uint8_t> datagram,
+    ModuleList& modules,
+    size_t& num_modules) const
+{
+    const size_t end = datagram.size() - 4;  // before the CRC
+    size_t offset = SCAN_HEADER_BYTES;
+    uint64_t module_size =
+        load<uint32_t>(datagram.data() + HEADER_FIRST_MODULE_SIZE_OFFSET);
+    num_modules = 0;
+    while (module_size)
+    {
+        if (num_modules == MAX_MODULES || offset + module_size > end ||
+            module_size < MODULE_ARRAYS_OFFSET)
         {
-            az_start[l] = load<float>(theta_start + l * 4);
-            az_delta[l] =
-                (load<float>(theta_stop + l * 4) - az_start[l]) / beams_m1;
-            t0[l] = load<uint64_t>(ts_start + l * 8);
-            dt[l] = load<uint64_t>(ts_stop + l * 8) - t0[l];
-            t_min = std::min({t_min, t0[l], t0[l] + dt[l]});
-            t_max = std::max({t_max, t0[l], t0[l] + dt[l]});
+            return Error::BadModuleChain;
+        }
+        ModuleView& module = modules[num_modules++];
+        module.start = datagram.data() + offset;
+        module.num_lines = load<uint32_t>(module.start + MODULE_LINES_OFFSET);
+        module.num_beams = load<uint32_t>(module.start + MODULE_BEAMS_OFFSET);
+        module.num_echoes = load<uint32_t>(module.start + MODULE_ECHOES_OFFSET);
+        if (module.num_lines < 1 || module.num_lines > NUM_LAYERS ||
+            module.num_beams < 1 || module.num_beams > MAX_BEAMS ||
+            module.num_echoes < 1 || module.num_echoes > MAX_ECHOES)
+        {
+            return Error::BadModuleHeader;
+        }
+        const size_t metadata_size = metadataBytes(module.num_lines);
+        if (module_size < metadata_size)
+        {
+            return Error::BadModuleSize;
         }
 
-        const uint8_t* tuple = mv.data;
-        for (uint32_t beam = 0; beam < mv.beams; beam++)
+        const uint8_t* tail = module.start + MODULE_ARRAYS_OFFSET +
+                              module.num_lines * LINE_ARRAY_BYTES;
+        module.distance_scale = load<float>(tail);
+        const uint32_t next_module_size = load<uint32_t>(tail + 4);
+        module.echo_content = tail[9];
+        module.beam_content = tail[10];
+        const uint32_t echo_bytes =
+            ((module.echo_content & ECHO_HAS_DISTANCE) ? 2u : 0u) +
+            ((module.echo_content & ECHO_HAS_RSSI) ? 2u : 0u);
+        module.beam_bytes =
+            echo_bytes * module.num_echoes +
+            ((module.beam_content & BEAM_HAS_PROPERTIES) ? 1u : 0u) +
+            ((module.beam_content & BEAM_HAS_AZIMUTH) ? 2u : 0u);
+        if (metadata_size + static_cast<uint64_t>(module.beam_bytes) *
+                                module.num_lines * module.num_beams !=
+            module_size)
         {
-            for (uint32_t l = 0; l < mv.lines; l++, tuple += mv.tuple_bytes)
-            {
-                const LineShape& ls = lines[l];
-                const float range =
-                    has_dist ? (mv.distance_scale *
-                                static_cast<float>(
-                                    load<uint16_t>(tuple + dist_off))) /
-                                   1000.0f
-                             : 0.f;
-                const float azimuth =
-                    has_az
-                        ? (static_cast<float>(load<uint16_t>(tuple + az_off)) -
-                           16384.0f) /
-                              5215.0f
-                        : az_start[l] + static_cast<float>(beam) * az_delta[l];
-                const float sin_az = std::sin(azimuth);
-                const float cos_az = std::cos(azimuth);
+            return Error::BadModuleSize;
+        }
+        module.beam_data = module.start + metadata_size;
 
-                uint8_t* p =
-                    out + static_cast<size_t>(ls.out_offset + beam) * step;
-                store<float>(p, o_x, range * cos_az * ls.cos_el);
-                store<float>(p, o_y, range * sin_az * ls.cos_el);
-                store<float>(p, o_z, range * ls.sin_el);
-                store<float>(
-                    p,
-                    o_int,
-                    has_rssi
-                        ? static_cast<float>(load<uint16_t>(tuple + rssi_off))
-                        : 0.f);
-                store<float>(p, o_rng, range);
-                store<float>(p, o_az, azimuth);
-                store<float>(p, o_el, ls.elevation);
-                store<uint32_t>(p, o_layer, ls.layer_id);
-                store<uint32_t>(p, o_echo, echo);
-                store<uint32_t>(
-                    p,
-                    o_idx,
-                    static_cast<uint32_t>(info.segment) * ls.index_stride +
-                        beam);
-                store<uint64_t>(p, o_t, (beam * dt[l]) / beams_m1_u + t0[l]);
-                store<float>(
-                    p,
-                    o_refl,
-                    has_prop ? static_cast<float>(tuple[prop_off] & 0x01)
-                             : 0.f);
-                store<float>(p, o_art, -1.f);  // set by the ghost filter
-            }
+        offset += module_size;
+        module_size = next_module_size;
+    }
+    if (offset != end || num_modules == 0)
+    {
+        return Error::BadModuleChain;
+    }
+    return Error::None;
+}
+
+/* Output position, layer id and elevation of every line: layers in
+ * ascending id, lines sharing an id in packet order. */
+void ScanDecoder::updateGeometry(const ModuleList& modules, size_t num_modules)
+{
+    GeometryKey key;
+    for (size_t module = 0; module < num_modules; module++)
+    {
+        const ModuleView& view = modules[module];
+        key.dimensions[module * 3 + 0] = view.num_lines;
+        key.dimensions[module * 3 + 1] = view.num_beams;
+        key.dimensions[module * 3 + 2] = view.num_echoes;
+        const uint8_t* phi =
+            view.start + MODULE_ARRAYS_OFFSET + view.num_lines * 16;
+        std::memcpy(
+            &key.elevation_bits[module * NUM_LAYERS],
+            phi,
+            view.num_lines * 4);
+    }
+    if (this->geometry_valid && key == this->geometry_key)
+    {
+        return;
+    }
+
+    struct LineReference
+    {
+        uint32_t module;
+        uint32_t line;
+        uint32_t layer_id;
+        uint32_t num_beams;
+    };
+    std::vector<LineReference> lines;
+    this->line_geometry.assign(num_modules, {});
+    for (uint32_t module = 0; module < num_modules; module++)
+    {
+        const ModuleView& view = modules[module];
+        const uint8_t* phi =
+            view.start + MODULE_ARRAYS_OFFSET + view.num_lines * 16;
+        this->line_geometry[module].resize(view.num_lines);
+        for (uint32_t line = 0; line < view.num_lines; line++)
+        {
+            const float phi_rad = load<float>(phi + line * 4);
+            LineGeometry& geometry = this->line_geometry[module][line];
+            geometry.layer_id = layerIdFromPhi(phi_rad);
+            // DIN ISO 8855 phi is positive below the horizon
+            geometry.elevation = -phi_rad;
+            geometry.sin_elevation = std::sin(geometry.elevation);
+            geometry.cos_elevation = std::cos(geometry.elevation);
+            lines.push_back({module, line, geometry.layer_id, view.num_beams});
         }
     }
-    info.time_min_us = t_min;
-    info.time_max_us = t_max;
-    return Error::None;
+
+    std::stable_sort(
+        lines.begin(),
+        lines.end(),
+        [](const LineReference& a, const LineReference& b)
+        { return a.layer_id < b.layer_id; });
+    std::array<uint32_t, NUM_LAYERS> layer_points{};
+    for (const LineReference& line : lines)
+    {
+        layer_points[line.layer_id] += line.num_beams;
+    }
+    uint32_t next_point = 0;
+    for (const LineReference& line : lines)
+    {
+        LineGeometry& geometry = this->line_geometry[line.module][line.line];
+        geometry.first_output_point = next_point;
+        geometry.index_stride = layer_points[line.layer_id];
+        next_point += line.num_beams;
+    }
+
+    this->geometry_points = next_point;
+    this->first_layer_module = lines.empty() ? 0 : lines.front().module;
+    this->first_layer_line = lines.empty() ? 0 : lines.front().line;
+    this->geometry_key = key;
+    this->geometry_valid = true;
+}
+
+/* Every beam of every line of one module, with or without a return. */
+void ScanDecoder::writeModulePoints(
+    const ModuleView& module,
+    const std::vector<LineGeometry>& lines,
+    uint64_t segment_index,
+    uint8_t* points,
+    uint64_t& time_min_us,
+    uint64_t& time_max_us) const
+{
+    const FieldOffsets& field = this->field_offsets;
+    const uint32_t point_step = this->point_layout.pointStep();
+
+    // --- Line arrays: times and azimuths of the first and last beam ---
+    const uint8_t* start_times = module.start + MODULE_ARRAYS_OFFSET;
+    const uint8_t* stop_times = start_times + module.num_lines * 8;
+    const uint8_t* start_azimuths = stop_times + module.num_lines * 12;
+    const uint8_t* stop_azimuths = start_azimuths + module.num_lines * 4;
+
+    const float beam_steps =
+        static_cast<float>(std::max(1, static_cast<int>(module.num_beams) - 1));
+    const uint64_t beam_steps_integer =
+        std::max<uint64_t>(1, module.num_beams - 1);
+    std::array<float, NUM_LAYERS> first_azimuth{};
+    std::array<float, NUM_LAYERS> azimuth_step{};
+    std::array<uint64_t, NUM_LAYERS> first_time_us{};
+    std::array<uint64_t, NUM_LAYERS> duration_us{};
+    for (uint32_t line = 0; line < module.num_lines; line++)
+    {
+        first_azimuth[line] = load<float>(start_azimuths + line * 4);
+        azimuth_step[line] =
+            (load<float>(stop_azimuths + line * 4) - first_azimuth[line]) /
+            beam_steps;
+        first_time_us[line] = load<uint64_t>(start_times + line * 8);
+        duration_us[line] =
+            load<uint64_t>(stop_times + line * 8) - first_time_us[line];
+        const uint64_t last_time_us = first_time_us[line] + duration_us[line];
+        time_min_us =
+            std::min({time_min_us, first_time_us[line], last_time_us});
+        time_max_us =
+            std::max({time_max_us, first_time_us[line], last_time_us});
+    }
+
+    // --- Where the selected echo's values are within a beam ---
+    const uint32_t echo =
+        (this->decode_options.echo_selection >= 1 &&
+         this->decode_options.echo_selection <= module.num_echoes)
+            ? this->decode_options.echo_selection - 1
+            : 0;
+    const bool has_distance = module.echo_content & ECHO_HAS_DISTANCE;
+    const bool has_rssi = module.echo_content & ECHO_HAS_RSSI;
+    const bool has_properties = module.beam_content & BEAM_HAS_PROPERTIES;
+    const bool has_azimuth = module.beam_content & BEAM_HAS_AZIMUTH;
+    const uint32_t echo_bytes = (has_distance ? 2u : 0u) + (has_rssi ? 2u : 0u);
+    const uint32_t distance_offset = echo_bytes * echo;
+    const uint32_t rssi_offset = distance_offset + (has_distance ? 2u : 0u);
+    const uint32_t properties_offset = echo_bytes * module.num_echoes;
+    const uint32_t azimuth_offset =
+        properties_offset + (has_properties ? 1u : 0u);
+
+    // --- Points ---
+    const uint8_t* beam_values = module.beam_data;
+    for (uint32_t beam = 0; beam < module.num_beams; beam++)
+    {
+        for (uint32_t line = 0; line < module.num_lines;
+             line++, beam_values += module.beam_bytes)
+        {
+            const LineGeometry& geometry = lines[line];
+            const float range = has_distance
+                                    ? (module.distance_scale *
+                                       static_cast<float>(load<uint16_t>(
+                                           beam_values + distance_offset))) /
+                                          1000.0f
+                                    : 0.f;
+            const float azimuth =
+                has_azimuth ? (static_cast<float>(load<uint16_t>(
+                                   beam_values + azimuth_offset)) -
+                               16384.0f) /
+                                  5215.0f
+                            : first_azimuth[line] +
+                                  static_cast<float>(beam) * azimuth_step[line];
+            const float sin_azimuth = std::sin(azimuth);
+            const float cos_azimuth = std::cos(azimuth);
+
+            uint8_t* point = points + static_cast<size_t>(
+                                          geometry.first_output_point + beam) *
+                                          point_step;
+            store<float>(
+                point,
+                field.x,
+                range * cos_azimuth * geometry.cos_elevation);
+            store<float>(
+                point,
+                field.y,
+                range * sin_azimuth * geometry.cos_elevation);
+            store<float>(point, field.z, range * geometry.sin_elevation);
+            store<float>(
+                point,
+                field.intensity,
+                has_rssi ? static_cast<float>(
+                               load<uint16_t>(beam_values + rssi_offset))
+                         : 0.f);
+            store<float>(point, field.range, range);
+            store<float>(point, field.azimuth, azimuth);
+            store<float>(point, field.elevation, geometry.elevation);
+            store<uint32_t>(point, field.layer, geometry.layer_id);
+            store<uint32_t>(point, field.echo, echo);
+            store<uint32_t>(
+                point,
+                field.index,
+                static_cast<uint32_t>(segment_index) * geometry.index_stride +
+                    beam);
+            store<uint64_t>(
+                point,
+                field.time,
+                (beam * duration_us[line]) / beam_steps_integer +
+                    first_time_us[line]);
+            store<float>(
+                point,
+                field.reflective,
+                has_properties
+                    ? static_cast<float>(beam_values[properties_offset] & 0x01)
+                    : 0.f);
+            store<float>(
+                point,
+                field.artifact,
+                -1.f);  // set by the ghost filter
+        }
+    }
 }
 
 }  // namespace multiscan::compact

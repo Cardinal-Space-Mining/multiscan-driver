@@ -75,56 +75,57 @@ class FrameAssembler
 public:
     struct Config
     {
-        uint32_t segments_per_frame = 12;
+        uint32_t segments_per_frame{12};
         /* Emit frames that end with expected segments missing. */
-        bool publish_partial_frames = true;
+        bool publish_partial_frames{true};
         /* Consecutive frames missing the same segments before those
          * segments stop being expected. */
-        uint32_t learn_frames = 3;
+        uint32_t learn_frames{3};
         /* A frame with no new segment for this long is closed. */
-        uint64_t stale_frame_ns = 100'000'000;
+        uint64_t stale_frame_ns{100'000'000};
         /* Room per segment until the first one is decoded; afterwards the
          * last segment's and last complete frame's sizes are used. */
-        uint32_t initial_segment_points = 1024;
+        uint32_t initial_segment_points{1024};
     };
 
     struct Frame
     {
-        std::vector<uint8_t> data;  // points * point_step bytes
-        uint32_t points = 0;
-        uint64_t frame_number = 0;
-        uint32_t segment_mask = 0;   // segments contained
-        uint32_t expected_mask = 0;  // segments expected when emitted
-        bool complete = false;
-        uint64_t stamp_ns = 0;     // earliest segment start (host clock)
-        uint64_t time_min_us = 0;  // earliest/latest point time (host clock)
-        uint64_t time_max_us = 0;
+        std::vector<uint8_t> data;  // num_points * point_step bytes
+        uint32_t num_points{0};
+        uint64_t frame_number{0};
+        uint32_t segment_mask{0};   // segments contained
+        uint32_t expected_mask{0};  // segments expected when emitted
+        bool complete{false};
+        uint64_t stamp_ns{0};  // earliest segment start (host clock)
+        /* Earliest and latest point time (host clock). */
+        uint64_t time_min_us{0};
+        uint64_t time_max_us{0};
     };
 
     struct Stats
     {
-        uint64_t frames_complete = 0;
-        uint64_t frames_partial = 0;  // emitted incomplete
-        uint64_t frames_discarded =
-            0;  // incomplete and not emitted (excluding startup)
-        uint64_t frames_missed = 0;  // frame numbers never seen
-        uint64_t segments = 0;       // accepted
-        uint64_t segments_duplicate = 0;
-        uint64_t segments_late = 0;
-        uint64_t segments_out_of_range = 0;
-        uint64_t telegrams_lost =
-            0;  // telegram counter gaps not filled by late arrivals
-        uint64_t decode_errors = 0;
-        uint64_t sensor_restarts = 0;
-        uint64_t expected_mask_changes = 0;
-        compact::Error last_decode_error = compact::Error::None;
+        uint64_t frames_complete{0};
+        uint64_t frames_partial{0};  // emitted incomplete
+        /* Incomplete and not emitted (excluding startup). */
+        uint64_t frames_discarded{0};
+        uint64_t frames_missed{0};  // frame numbers never seen
+        uint64_t segments{0};       // accepted
+        uint64_t segments_duplicate{0};
+        uint64_t segments_late{0};
+        uint64_t segments_out_of_range{0};
+        /* Telegram counter gaps not filled by late arrivals. */
+        uint64_t telegrams_lost{0};
+        uint64_t decode_errors{0};
+        uint64_t sensor_restarts{0};
+        uint64_t expected_mask_changes{0};
+        compact::Error last_decode_error{compact::Error::None};
     };
 
     /* host - sensor clock offset (ns) for a decoded telegram that arrived at
-     * recv_ns. Called for every telegram that decodes, so it can also feed a
-     * clock estimator. */
-    using ClockOffset =
-        std::function<int64_t(const compact::ScanInfo& info, uint64_t recv_ns)>;
+     * receive_time_ns. Called for every telegram that decodes, so it can
+     * also feed a clock estimator. */
+    using ClockOffset = std::function<
+        int64_t(const compact::ScanInfo& info, uint64_t receive_time_ns)>;
 
     /* Called for every segment that is accepted into a frame, once it has
      * been decoded there and before the frame can be emitted: the telegram,
@@ -137,65 +138,110 @@ public:
         uint64_t frame_number,
         uint32_t first_point)>;
 
+public:
     FrameAssembler(
         compact::ScanDecoder& decoder,
         Config config,
         ClockOffset clock_offset);
 
+public:
     /* Decode and assemble one scan telegram. Frames that complete or end
      * because of it are appended to `out`. */
     compact::Error add(
         std::span<const uint8_t> datagram,
-        uint64_t recv_ns,
+        uint64_t receive_time_ns,
         std::vector<Frame>& out);
 
     /* Close the current frame if it received nothing for stale_frame_ns. */
     void flushStale(uint64_t now_ns, std::vector<Frame>& out);
 
-    void setSegmentHook(SegmentHook hook) { segment_hook = std::move(hook); }
+    void setSegmentHook(SegmentHook hook)
+    {
+        this->segment_hook = std::move(hook);
+    }
 
     /* Forget all state, e.g. after reconnecting to the sensor. */
     void reset();
 
-    const Stats& stats() const { return counters; }
-    uint32_t expectedMask() const { return expected_mask; }
+    const Stats& stats() const { return this->statistics; }
+    uint32_t expectedMask() const { return this->expected_mask; }
 
-private:
+protected:
+    /* A decoded segment's times on the host clock. */
+    struct SegmentTimes
+    {
+        uint64_t stamp_ns;
+        uint64_t time_min_us;
+        uint64_t time_max_us;
+    };
+
+protected:
+    // --- Steps of add() ------------------------------------------------------
+    compact::Error decodeAtTail(
+        std::span<const uint8_t> datagram,
+        compact::ScanInfo& info,
+        uint8_t*& decoded);
+    SegmentTimes moveToHostClock(
+        const compact::ScanInfo& info,
+        uint64_t receive_time_ns,
+        uint8_t* decoded);
+    void countLostTelegrams(uint64_t telegram_counter);
+    bool placeSegment(
+        const compact::ScanInfo& info,
+        uint8_t*& decoded,
+        std::vector<Frame>& out);
+    void acceptSegment(
+        const compact::ScanInfo& info,
+        const SegmentTimes& times,
+        uint64_t receive_time_ns,
+        std::span<const uint8_t> datagram,
+        std::vector<Frame>& out);
+
+    // --- Frames --------------------------------------------------------------
     void startFrame(uint64_t frame_number);
     void closeFrame(bool learn, std::vector<Frame>& out);
     void emit(bool complete, std::vector<Frame>& out);
-    uint8_t* tail(size_t& capacity_points);
-    void ensureTail(size_t points);
+    void forgetFrame();
+    void learnExpectedSegments();
 
+    // --- Buffer --------------------------------------------------------------
+    uint8_t* tail(size_t& capacity_points);
+    void ensureTail(size_t num_points);
+
+protected:
     compact::ScanDecoder& decoder;
-    Config cfg;
+    Config config;
     ClockOffset clock_offset;
     SegmentHook segment_hook;
-    uint32_t step;
-    int32_t time_field;  // byte offset of the point time, or -1
-    uint32_t all_mask;
+    uint32_t point_step;
+    int32_t time_offset;  // byte offset of the point time, or -1
+    uint32_t all_segments_mask;
 
-    // current frame
-    bool active = false;
-    bool joined_mid_frame = false;
-    uint64_t frame_number = 0;
-    uint32_t seen_mask = 0;
-    uint32_t used_points = 0;
-    uint64_t stamp_ns = 0, time_min_us = 0, time_max_us = 0;
-    uint64_t last_segment_ns = 0;
-    std::vector<uint8_t> buffer;
+    // --- The current frame ---------------------------------------------------
+    bool frame_open{false};
+    bool joined_mid_frame{false};
+    uint64_t frame_number{0};
+    uint32_t received_mask{0};
+    uint32_t frame_points{0};
+    uint64_t frame_stamp_ns{0};
+    uint64_t frame_time_min_us{0};
+    uint64_t frame_time_max_us{0};
+    uint64_t last_segment_time_ns{0};
+    std::vector<uint8_t> frame_buffer;
 
-    // history
-    bool have_last_emitted = false;
-    uint64_t last_emitted_frame = 0;
-    bool have_counter = false;
-    uint64_t last_counter = 0;
+    // --- History -------------------------------------------------------------
+    bool has_last_closed{false};
+    uint64_t last_closed_frame{0};
+    bool has_telegram_counter{false};
+    uint64_t highest_telegram_counter{0};
     uint32_t expected_mask;
-    uint32_t partial_mask = 0, partial_streak = 0;
+    /* The segments recent frames ended with, and how many in a row. */
+    uint32_t incomplete_mask{0};
+    uint32_t incomplete_streak{0};
     uint32_t frame_points_hint;
     uint32_t segment_points_hint;
 
-    Stats counters;
+    Stats statistics;
 };
 
 }  // namespace multiscan

@@ -41,9 +41,9 @@
 
 #include <algorithm>
 #include <array>
-#include <ctime>
 #include <cerrno>
 #include <cstring>
+#include <ctime>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -56,225 +56,285 @@
 namespace multiscan
 {
 
+namespace
+{
+
+uint64_t toNanoseconds(const timespec& time)
+{
+    return static_cast<uint64_t>(time.tv_sec) * 1000000000ULL +
+           static_cast<uint64_t>(time.tv_nsec);
+}
+
+/* The SO_TIMESTAMPNS receive time of a message, or 0. */
+uint64_t kernelReceiveTime(msghdr& header)
+{
+    for (cmsghdr* control = CMSG_FIRSTHDR(&header); control;
+         control = CMSG_NXTHDR(&header, control))
+    {
+        if (control->cmsg_level == SOL_SOCKET &&
+            control->cmsg_type == SCM_TIMESTAMPNS)
+        {
+            timespec time;
+            std::memcpy(&time, CMSG_DATA(control), sizeof(time));
+            return toNanoseconds(time);
+        }
+    }
+    return 0;
+}
+
+}  // namespace
+
+
 struct UdpReceiver::Socket
 {
-    int fd = -1;
-    uint16_t port = 0;
-    std::vector<uint8_t> storage;  // batch * MAX_DATAGRAM_BYTES
-    std::vector<mmsghdr> msgs;
-    std::vector<iovec> iovs;
-    std::vector<std::array<uint8_t, CMSG_SPACE(sizeof(timespec))>> controls;
+    using ControlBuffer = std::array<uint8_t, CMSG_SPACE(sizeof(timespec))>;
+
+    int descriptor{-1};
+    uint16_t port{0};
+    std::vector<uint8_t> storage;  // batch_size * MAX_DATAGRAM_BYTES
+    std::vector<mmsghdr> messages;
+    std::vector<iovec> io_vectors;
+    std::vector<ControlBuffer> control_buffers;
+
+    ~Socket()
+    {
+        if (this->descriptor >= 0)
+        {
+            ::close(this->descriptor);
+        }
+    }
 };
 
+
+
+// --- Setup -------------------------------------------------------------------
+
 UdpReceiver::UdpReceiver(size_t batch_size) :
-    batch{std::max<size_t>(batch_size, 1)},
-    wake_fd{::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)}
+    batch_size{std::max<size_t>(batch_size, 1)},
+    wake_event_fd{::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)}
 {
 }
 
 UdpReceiver::~UdpReceiver()
 {
-    close();
-    if (wake_fd >= 0)
+    this->close();
+    if (this->wake_event_fd >= 0)
     {
-        ::close(wake_fd);
+        ::close(this->wake_event_fd);
     }
 }
 
 void UdpReceiver::close()
 {
-    for (Socket* s : sockets)
-    {
-        if (s->fd >= 0)
-        {
-            ::close(s->fd);
-        }
-        delete s;
-    }
-    sockets.clear();
-    bound_ports.clear();
+    this->sockets.clear();
+    this->bound_ports.clear();
 }
 
 bool UdpReceiver::open(
     const std::vector<uint16_t>& ports,
-    int rcvbuf_bytes,
+    int receive_buffer_bytes,
     std::string& error)
 {
-    close();
-    if (wake_fd < 0)
+    this->close();
+    if (this->wake_event_fd < 0)
     {
         error = std::string("eventfd: ") + std::strerror(errno);
         return false;
     }
-    std::vector<uint16_t> unique;
-    for (uint16_t p : ports)
+    std::vector<uint16_t> unique_ports;
+    for (const uint16_t port : ports)
     {
-        if (p == 0 ||
-            std::find(unique.begin(), unique.end(), p) == unique.end())
+        if (port == 0 ||
+            std::find(unique_ports.begin(), unique_ports.end(), port) ==
+                unique_ports.end())
         {
-            unique.push_back(p);
+            unique_ports.push_back(port);
         }
     }
-    for (uint16_t p : unique)
+    for (const uint16_t port : unique_ports)
     {
-        auto* s = new Socket;
-        sockets.push_back(s);
-        s->fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-        if (s->fd < 0)
+        if (!this->openSocket(port, receive_buffer_bytes, error))
         {
-            error = std::string("socket: ") + std::strerror(errno);
-            close();
+            this->close();
             return false;
         }
-        if (rcvbuf_bytes > 0)
-        {
-            ::setsockopt(
-                s->fd,
-                SOL_SOCKET,
-                SO_RCVBUF,
-                &rcvbuf_bytes,
-                sizeof(rcvbuf_bytes));
-        }
-        int on = 1;
-        ::setsockopt(s->fd, SOL_SOCKET, SO_TIMESTAMPNS, &on, sizeof(on));
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        addr.sin_port = htons(p);
-        if (::bind(s->fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
-        {
-            error =
-                "bind port " + std::to_string(p) + ": " + std::strerror(errno);
-            close();
-            return false;
-        }
-        socklen_t len = sizeof(addr);
-        ::getsockname(s->fd, reinterpret_cast<sockaddr*>(&addr), &len);
-        s->port = ntohs(addr.sin_port);
-        bound_ports.push_back(s->port);
-
-        int granted = 0;
-        socklen_t glen = sizeof(granted);
-        ::getsockopt(s->fd, SOL_SOCKET, SO_RCVBUF, &granted, &glen);
-        rcvbuf_actual = granted / 2;  // Linux reports double the usable size
-
-        s->storage.resize(batch * MAX_DATAGRAM_BYTES);
-        s->msgs.resize(batch);
-        s->iovs.resize(batch);
-        s->controls.resize(batch);
     }
     return true;
 }
 
+bool UdpReceiver::openSocket(
+    uint16_t port,
+    int receive_buffer_bytes,
+    std::string& error)
+{
+    Socket& socket = *this->sockets.emplace_back(std::make_unique<Socket>());
+    socket.descriptor =
+        ::socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (socket.descriptor < 0)
+    {
+        error = std::string("socket: ") + std::strerror(errno);
+        return false;
+    }
+    if (receive_buffer_bytes > 0)
+    {
+        ::setsockopt(
+            socket.descriptor,
+            SOL_SOCKET,
+            SO_RCVBUF,
+            &receive_buffer_bytes,
+            sizeof(receive_buffer_bytes));
+    }
+    const int enable = 1;
+    ::setsockopt(
+        socket.descriptor,
+        SOL_SOCKET,
+        SO_TIMESTAMPNS,
+        &enable,
+        sizeof(enable));
+
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons(port);
+    if (::bind(
+            socket.descriptor,
+            reinterpret_cast<sockaddr*>(&address),
+            sizeof(address)) < 0)
+    {
+        error =
+            "bind port " + std::to_string(port) + ": " + std::strerror(errno);
+        return false;
+    }
+    socklen_t address_size = sizeof(address);
+    ::getsockname(
+        socket.descriptor,
+        reinterpret_cast<sockaddr*>(&address),
+        &address_size);
+    socket.port = ntohs(address.sin_port);
+    this->bound_ports.push_back(socket.port);
+
+    int granted = 0;
+    socklen_t granted_size = sizeof(granted);
+    ::getsockopt(
+        socket.descriptor,
+        SOL_SOCKET,
+        SO_RCVBUF,
+        &granted,
+        &granted_size);
+    // Linux reports double the usable size
+    this->granted_buffer_bytes = granted / 2;
+
+    socket.storage.resize(this->batch_size * MAX_DATAGRAM_BYTES);
+    socket.messages.resize(this->batch_size);
+    socket.io_vectors.resize(this->batch_size);
+    socket.control_buffers.resize(this->batch_size);
+    return true;
+}
+
+
+
+// --- Receiving ---------------------------------------------------------------
+
 void UdpReceiver::stop()
 {
-    stopped = true;
-    if (wake_fd >= 0)
+    this->stopped = true;
+    if (this->wake_event_fd >= 0)
     {
         const uint64_t one = 1;
         [[maybe_unused]]
-        auto r = ::write(wake_fd, &one, sizeof(one));
+        const auto written = ::write(this->wake_event_fd, &one, sizeof(one));
     }
 }
 
 int UdpReceiver::receive(std::vector<Datagram>& out, int timeout_ms)
 {
     out.clear();
-    if (stopped || wake_fd < 0 || sockets.empty())
+    if (this->stopped || this->wake_event_fd < 0 || this->sockets.empty())
     {
         return -1;
     }
-    std::vector<pollfd> fds;
-    fds.reserve(sockets.size() + 1);
-    fds.push_back({wake_fd, POLLIN, 0});
-    for (Socket* s : sockets)
+    std::vector<pollfd> descriptors;
+    descriptors.reserve(this->sockets.size() + 1);
+    descriptors.push_back({this->wake_event_fd, POLLIN, 0});
+    for (const auto& socket : this->sockets)
     {
-        fds.push_back({s->fd, POLLIN, 0});
+        descriptors.push_back({socket->descriptor, POLLIN, 0});
     }
 
-    int r = ::poll(fds.data(), fds.size(), timeout_ms);
-    if (r < 0)
+    const int ready =
+        ::poll(descriptors.data(), descriptors.size(), timeout_ms);
+    if (ready < 0)
     {
         return errno == EINTR ? 0 : -1;
     }
-    if (fds[0].revents & POLLIN)
+    if (descriptors[0].revents & POLLIN)
     {
         return -1;  // stopped; the eventfd stays readable
     }
-    if (r == 0)
+    if (ready == 0)
     {
         return 0;
     }
 
-    for (size_t i = 0; i < sockets.size(); i++)
+    for (size_t i = 0; i < this->sockets.size(); i++)
     {
-        if (!(fds[i + 1].revents & POLLIN))
+        if ((descriptors[i + 1].revents & POLLIN) &&
+            !this->readSocket(*this->sockets[i], out))
         {
-            continue;
-        }
-        Socket& s = *sockets[i];
-        for (size_t k = 0; k < batch; k++)
-        {
-            s.iovs[k] = {
-                s.storage.data() + k * MAX_DATAGRAM_BYTES,
-                MAX_DATAGRAM_BYTES};
-            msghdr& h = s.msgs[k].msg_hdr;
-            h = msghdr{};
-            h.msg_iov = &s.iovs[k];
-            h.msg_iovlen = 1;
-            h.msg_control = s.controls[k].data();
-            h.msg_controllen = s.controls[k].size();
-        }
-        const int n = ::recvmmsg(
-            s.fd,
-            s.msgs.data(),
-            static_cast<unsigned>(batch),
-            MSG_DONTWAIT,
-            nullptr);
-        if (n < 0)
-        {
-            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-            {
-                continue;
-            }
             return -1;
-        }
-        for (int k = 0; k < n; k++)
-        {
-            msghdr& h = s.msgs[k].msg_hdr;
-            if (h.msg_flags & MSG_TRUNC)
-            {
-                truncated++;
-                continue;
-            }
-            Datagram d;
-            d.data = {
-                s.storage.data() + k * MAX_DATAGRAM_BYTES,
-                s.msgs[k].msg_len};
-            d.port = s.port;
-            for (cmsghdr* c = CMSG_FIRSTHDR(&h); c; c = CMSG_NXTHDR(&h, c))
-            {
-                if (c->cmsg_level == SOL_SOCKET &&
-                    c->cmsg_type == SCM_TIMESTAMPNS)
-                {
-                    timespec ts;
-                    std::memcpy(&ts, CMSG_DATA(c), sizeof(ts));
-                    d.recv_ns =
-                        static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL +
-                        static_cast<uint64_t>(ts.tv_nsec);
-                }
-            }
-            if (d.recv_ns == 0)
-            {
-                timespec ts;
-                ::clock_gettime(CLOCK_REALTIME, &ts);
-                d.recv_ns = static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL +
-                            static_cast<uint64_t>(ts.tv_nsec);
-            }
-            out.push_back(d);
         }
     }
     return static_cast<int>(out.size());
+}
+
+bool UdpReceiver::readSocket(Socket& socket, std::vector<Datagram>& out)
+{
+    for (size_t i = 0; i < this->batch_size; i++)
+    {
+        socket.io_vectors[i] = {
+            socket.storage.data() + i * MAX_DATAGRAM_BYTES,
+            MAX_DATAGRAM_BYTES};
+        msghdr& header = socket.messages[i].msg_hdr;
+        header = msghdr{};
+        header.msg_iov = &socket.io_vectors[i];
+        header.msg_iovlen = 1;
+        header.msg_control = socket.control_buffers[i].data();
+        header.msg_controllen = socket.control_buffers[i].size();
+    }
+    const int received = ::recvmmsg(
+        socket.descriptor,
+        socket.messages.data(),
+        static_cast<unsigned>(this->batch_size),
+        MSG_DONTWAIT,
+        nullptr);
+    if (received < 0)
+    {
+        return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+    }
+
+    for (int i = 0; i < received; i++)
+    {
+        msghdr& header = socket.messages[i].msg_hdr;
+        if (header.msg_flags & MSG_TRUNC)
+        {
+            this->truncated_datagrams++;
+            continue;
+        }
+        Datagram datagram;
+        datagram.data = {
+            socket.storage.data() + i * MAX_DATAGRAM_BYTES,
+            socket.messages[i].msg_len};
+        datagram.port = socket.port;
+        datagram.receive_time_ns = kernelReceiveTime(header);
+        if (datagram.receive_time_ns == 0)
+        {
+            timespec now;
+            ::clock_gettime(CLOCK_REALTIME, &now);
+            datagram.receive_time_ns = toNanoseconds(now);
+        }
+        out.push_back(datagram);
+    }
+    return true;
 }
 
 }  // namespace multiscan

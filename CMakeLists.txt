@@ -10,38 +10,43 @@ find_package(geometry_msgs REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(csm_metrics REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(ZLIB REQUIRED)
 
 standard_compile_options()
 
 
-# --- Core (ROS-free decoding) ----------------------------------------------------
+# --- Core (ROS free: decoding, sensor protocol, ghost filter) ------------------
 add_library(multiscan_core STATIC
-  "src/compact/decoder.cpp"
-  "src/compact/point_layout.cpp"
-  "src/frame_assembler.cpp"
-  "src/ghost/ghost_filter.cpp"
-  "src/net/udp_receiver.cpp"
-  "src/sopas/cola_client.cpp"
-  "src/sopas/sensor_session.cpp"
-  "src/sopas/sensor_settings.cpp"
-  "src/time_sync.cpp")
+    "src/compact/decoder.cpp"
+    "src/compact/point_layout.cpp"
+    "src/frame_assembler.cpp"
+    "src/ghost/ghost_filter.cpp"
+    "src/ghost/ghost_filter_worker.cpp"
+    "src/net/udp_receiver.cpp"
+    "src/sopas/cola_client.cpp"
+    "src/sopas/sensor_session.cpp"
+    "src/sopas/sensor_settings.cpp"
+    "src/time_sync.cpp" )
 target_include_directories(multiscan_core PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/src" )
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include" )
 target_link_libraries(multiscan_core PUBLIC
     ZLIB::ZLIB )
 
 # --- Executables --------------------------------------------------------------
 add_executable(multiscan_driver
-    "src/multiscan_driver.cpp" )
+    "src/main.cpp"
+    "src/node/diagnostics.cpp"
+    "src/node/driver_config.cpp"
+    "src/node/multiscan_node.cpp"
+    "src/node/receive_loop.cpp" )
 target_link_libraries(multiscan_driver
     multiscan_core
     csm_metrics::stats
     csm_metrics::profiling )
-target_include_directories(multiscan_driver PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<INSTALL_INTERFACE:include>" )
 auto_target_dependencies(multiscan_driver
+    ament_index_cpp
     csm_utils
     rclcpp
     sensor_msgs
@@ -62,7 +67,8 @@ if(BUILD_TESTING)
         multiscan_core
         ZLIB::ZLIB )
     target_compile_definitions(multiscan_test_support INTERFACE
-        MS_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data" )
+        MS_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data"
+        MS_MODELS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/models" )
 
     ament_add_gtest(test_compact_packet "test/test_compact_packet.cpp")
     target_link_libraries(test_compact_packet multiscan_test_support)
@@ -89,7 +95,8 @@ if(BUILD_TESTING)
     add_executable(bench_decoder "test/bench_decoder.cpp")
     target_link_libraries(bench_decoder multiscan_test_support)
 
-    # not a test: ghost filter timing (bench_ghost_filter MODEL [CAPTURE] [--paced])
+    # not a test: ghost filter timing
+    # (bench_ghost_filter [MODEL] [CAPTURE] [--paced] [--no-early-exit])
     add_executable(bench_ghost_filter "test/bench_ghost_filter.cpp")
     target_link_libraries(bench_ghost_filter multiscan_test_support)
 endif()
@@ -103,8 +110,15 @@ install(PROGRAMS
     "tools/ms_geometry.py"
     DESTINATION lib/${PROJECT_NAME} )
 
+# multiscan_spec.hpp (net_adapter's codec) and artifact_filter/ (ghost-ml-ws
+# builds its tools against the driver's classifier)
 install(DIRECTORY include/
     DESTINATION include )
+
+# default ghost filter models (ghost_filter.model_file: artifact_full)
+install(DIRECTORY models
+    DESTINATION share/${PROJECT_NAME}
+    FILES_MATCHING PATTERN "*.model.txt" PATTERN "*.report.json" )
 
 ament_export_include_directories(
     include )

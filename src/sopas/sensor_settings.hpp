@@ -93,9 +93,75 @@ constexpr int64_t TIMEZONE_UTC = 34;
 
 struct SensorSettings
 {
-    EchoFilter echo_filter = EchoFilter::Last;
+public:
+    struct RangeFilter
+    {
+        bool enabled{false};
+        int64_t min_mm{0};
+        int64_t max_mm{200000};
+    };
+
+    struct CubicFilter
+    {
+        bool enabled{false};
+        std::array<int64_t, 3> min_mm{-20000, -20000, -20000};  // x, y, z
+        std::array<int64_t, 3> max_mm{20000, 20000, 20000};
+    };
+
+    struct MovingAverage
+    {
+        bool enabled{false};
+        int64_t depth{2};  // scans averaged
+    };
+
+    struct IntervalFilter
+    {
+        bool enabled{false};
+        /* Output every n-th scan; the device rejects 1 (sFA 30). */
+        int64_t factor{4};
+    };
+
+    struct Contamination
+    {
+        ContaminationStrategy strategy{ContaminationStrategy::Inactive};
+        int64_t response_time_s{3};
+        ContaminationSensitivity sensitivity{ContaminationSensitivity::Low};
+        /* Use `sectors` (else: no weather protection hood). */
+        bool custom_sectors{true};
+        std::array<bool, 12> sectors{
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true};
+        bool warning{true};
+        bool error{true};
+    };
+
+    struct TimeSync
+    {
+        TimeSyncMode mode{TimeSyncMode::Off};
+        /* IPv4 of the NTP server. Must be set before settingItems() when
+         * mode is Ntp (the driver fills in its own address if empty). */
+        std::string ntp_server;
+        int64_t ntp_update_s{10};  // 1..3600
+    };
+
+public:
+    /* Empty if valid, else what is wrong. */
+    std::string validate() const;
+
+public:
+    EchoFilter echo_filter{EchoFilter::Last};
     /* Layers 1..16 (index 0..15); layers 6 and 14 are the high-res ones. */
-    std::array<bool, 16> layers = {
+    std::array<bool, 16> layers{
         true,
         true,
         true,
@@ -112,108 +178,55 @@ struct SensorSettings
         false,
         true,
         true};
-    double output_range_start_deg = -180.;
-    double output_range_stop_deg = 180.;
-    bool interlaced = false;
+    double output_range_start_deg{-180.};
+    double output_range_stop_deg{180.};
+    bool interlaced{false};
 
-    struct
-    {
-        bool enabled = false;
-        int64_t min_mm = 0;
-        int64_t max_mm = 200000;
-    } range_filter;
-
-    struct
-    {
-        bool enabled = false;
-        std::array<int64_t, 3> min_mm = {-20000, -20000, -20000};  // x, y, z
-        std::array<int64_t, 3> max_mm = {20000, 20000, 20000};
-    } cubic_filter;
-
-    bool particle_filter = false;  // adds one scan of latency
-    bool fog_filter = false;
-
-    struct
-    {
-        bool enabled = false;
-        int64_t depth = 2;  // scans averaged
-    } moving_average;
-
-    struct
-    {
-        bool enabled = false;
-        int64_t factor =
-            4;  // output every n-th scan; the device rejects 1 (sFA 30)
-    } interval_filter;
-
-    struct
-    {
-        ContaminationStrategy strategy = ContaminationStrategy::Inactive;
-        int64_t response_time_s = 3;
-        ContaminationSensitivity sensitivity = ContaminationSensitivity::Low;
-        bool custom_sectors =
-            true;  // use `sectors` (else: no weather protection hood)
-        std::array<bool, 12> sectors = {
-            true,
-            true,
-            true,
-            true,
-            true,
-            true,
-            true,
-            true,
-            true,
-            true,
-            true,
-            true};
-        bool warning = true;
-        bool error = true;
-    } contamination;
-
-    struct
-    {
-        TimeSyncMode mode = TimeSyncMode::Off;
-        /* IPv4 of the NTP server. Must be set before settingItems() when
-         * mode is Ntp (the driver fills in its own address if empty). */
-        std::string ntp_server = "";
-        int64_t ntp_update_s = 10;  // 1..3600
-    } time_sync;
-
-    /* Empty if valid, else what is wrong. */
-    std::string validate() const;
+    RangeFilter range_filter;
+    CubicFilter cubic_filter;
+    bool particle_filter{false};  // adds one scan of latency
+    bool fog_filter{false};
+    MovingAverage moving_average;
+    IntervalFilter interval_filter;
+    Contamination contamination;
+    TimeSync time_sync;
 };
+
 
 /* One setting: the telegram that applies it and how to check it. */
 struct SettingItem
 {
     std::string name;
-    std::string write;  // full telegram, e.g. "sWN FREchoFilter 2"
-    std::string read;   // "sRN FREchoFilter", or "" for methods
-    std::vector<int64_t>
-        expected;  // read-back arguments (or method reply for methods)
+    std::string write_telegram;  // full telegram, e.g. "sWN FREchoFilter 2"
+    std::string read_telegram;   // "sRN FREchoFilter", or "" for methods
+    /* Read-back arguments (or the reply for methods). */
+    std::vector<int64_t> expected_values;
 };
 
-std::vector<SettingItem> settingItems(const SensorSettings& s);
+std::vector<SettingItem> settingItems(const SensorSettings& settings);
 
 /* "" if the read-back arguments equal `expected` (compared as 32-bit two's
  * complement, which is how the sensor prints negative values), else a
  * description of the difference. */
 std::string compareReadback(
-    const std::vector<std::string>& args,
+    const std::vector<std::string>& arguments,
     const std::vector<int64_t>& expected);
 
-/* CoLa A argument formats: numbers as signed decimal ("+5", "-5"), which the
+/* CoLa A argument format for numbers: signed decimal ("+5", "-5"), which the
  * sensor never confuses with hex. */
-std::string num(int64_t v);
+std::string signedDecimal(int64_t value);
 
-std::optional<EchoFilter> echoFilterFromString(const std::string& s);
+
+// --- Parameter values --------------------------------------------------------
+
+std::optional<EchoFilter> echoFilterFromString(const std::string& text);
 std::optional<ContaminationStrategy> contaminationStrategyFromString(
-    const std::string& s);
+    const std::string& text);
 std::optional<ContaminationSensitivity> contaminationSensitivityFromString(
-    const std::string& s);
-std::optional<TimeSyncMode> timeSyncModeFromString(const std::string& s);
+    const std::string& text);
+std::optional<TimeSyncMode> timeSyncModeFromString(const std::string& text);
 
 /* Dotted IPv4 -> its four bytes, or nullopt. */
-std::optional<std::array<uint8_t, 4>> parseIpv4(const std::string& s);
+std::optional<std::array<uint8_t, 4>> parseIpv4(const std::string& text);
 
 }  // namespace multiscan::sopas

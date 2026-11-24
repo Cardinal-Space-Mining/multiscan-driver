@@ -60,10 +60,10 @@ namespace multiscan::sopas
 
 struct Telegram
 {
-    std::string type;               // sRA, sWA, sAN, sEA, sSN, sFA, ...
-    std::string name;               // variable/method name ("" for sFA)
-    std::vector<std::string> args;  // space separated arguments
-    std::string raw;                // full text between STX and ETX
+    std::string type;                    // sRA, sWA, sAN, sEA, sSN, sFA, ...
+    std::string name;                    // variable/method name ("" for sFA)
+    std::vector<std::string> arguments;  // space separated arguments
+    std::string raw;                     // full text between STX and ETX
 };
 
 enum class Status
@@ -78,12 +78,14 @@ enum class Status
 
 struct Result
 {
-    Status status = Status::NotConnected;
+    Status status{Status::NotConnected};
     Telegram reply;
-    int sopas_error = 0;  // Sopas_Error_* code when status == SopasError
-    bool ok() const { return status == Status::Ok; }
+    int sopas_error{0};  // Sopas_Error_* code when status == SopasError
+
+    bool ok() const { return this->status == Status::Ok; }
     std::string describe() const;
 };
+
 
 /* Name of a Sopas_Error_* code (operating instructions, table 455). */
 const char* sopasErrorName(int code);
@@ -95,23 +97,27 @@ std::optional<int64_t> parseNumber(const std::string& token);
 /* Split "sRA Name a b c" into a Telegram (no validation). */
 Telegram parseTelegram(const std::string& text);
 
+
 class ColaClient
 {
 public:
     using EventHandler = std::function<void(const Telegram&)>;
 
+public:
     ColaClient() = default;
     ~ColaClient();
+
     ColaClient(const ColaClient&) = delete;
     ColaClient& operator=(const ColaClient&) = delete;
 
+public:
     bool connect(
         const std::string& host,
         uint16_t port,
         int timeout_ms,
         std::string& error);
     void disconnect();
-    bool connected() const { return fd >= 0; }
+    bool connected() const { return this->socket_fd >= 0; }
 
     /* IPv4 address of this end of the connection: the interface that
      * reaches the sensor ("" when not connected). */
@@ -126,19 +132,30 @@ public:
      * Returns false if the connection was lost. */
     bool poll(int timeout_ms);
 
-    void onEvent(EventHandler handler) { event_handler = std::move(handler); }
+    void onEvent(EventHandler handler)
+    {
+        this->event_handler = std::move(handler);
+    }
 
-private:
+protected:
     enum class ReadResult
     {
         Telegram,
         Timeout,
         Closed
     };
-    ReadResult readTelegram(std::string& out, int64_t deadline_ms);
 
-    int fd = -1;
-    std::string rx;  // bytes received but not yet framed
+protected:
+    Status sendFrame(const std::string& telegram, int64_t deadline_ms);
+    Result awaitReply(const Telegram& request, int64_t deadline_ms);
+    ReadResult readTelegram(std::string& text, int64_t deadline_ms);
+    /* Takes one framed telegram out of the receive buffer, if there is one. */
+    bool takeTelegram(std::string& text);
+    ReadResult receiveMore(int64_t deadline_ms);
+
+protected:
+    int socket_fd{-1};
+    std::string receive_buffer;  // bytes received but not yet framed
     EventHandler event_handler;
 };
 

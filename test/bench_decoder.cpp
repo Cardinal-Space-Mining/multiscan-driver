@@ -50,7 +50,7 @@ int main(int argc, char** argv)
                 { return 0; });
             for (const auto& d : scans)
             {
-                if (asmb.add(d.data, d.recv_time_ns, frames) !=
+                if (asmb.add(d.data, d.receive_time_ns, frames) !=
                     compact::Error::None)
                 {
                     return 1;

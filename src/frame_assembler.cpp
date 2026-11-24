@@ -49,310 +49,407 @@ namespace multiscan
 {
 
 FrameAssembler::FrameAssembler(
-    compact::ScanDecoder& dec,
+    compact::ScanDecoder& decoder,
     Config config,
-    ClockOffset offset) :
-    decoder{dec},
-    cfg{config},
-    clock_offset{std::move(offset)},
-    step{dec.layout().pointStep()},
-    time_field{dec.layout().offset(Field::Time)}
+    ClockOffset clock_offset) :
+    decoder{decoder},
+    config{config},
+    clock_offset{std::move(clock_offset)},
+    point_step{decoder.layout().pointStep()},
+    time_offset{decoder.layout().offset(Field::Time)}
 {
-    cfg.segments_per_frame =
-        std::clamp<uint32_t>(cfg.segments_per_frame, 1, 32);
-    cfg.learn_frames = std::max<uint32_t>(cfg.learn_frames, 1);
-    all_mask = (cfg.segments_per_frame == 32)
-                   ? 0xFFFFFFFFu
-                   : ((1u << cfg.segments_per_frame) - 1);
-    expected_mask = all_mask;
-    segment_points_hint = std::max<uint32_t>(cfg.initial_segment_points, 1);
-    frame_points_hint = segment_points_hint * cfg.segments_per_frame;
+    this->config.segments_per_frame =
+        std::clamp<uint32_t>(this->config.segments_per_frame, 1, 32);
+    this->config.learn_frames =
+        std::max<uint32_t>(this->config.learn_frames, 1);
+    this->all_segments_mask =
+        (this->config.segments_per_frame == 32)
+            ? 0xFFFFFFFFu
+            : ((1u << this->config.segments_per_frame) - 1);
+    this->expected_mask = this->all_segments_mask;
+    this->segment_points_hint =
+        std::max<uint32_t>(this->config.initial_segment_points, 1);
+    this->frame_points_hint =
+        this->segment_points_hint * this->config.segments_per_frame;
 }
 
 void FrameAssembler::reset()
 {
-    active = false;
-    used_points = 0;
-    seen_mask = 0;
-    have_last_emitted = false;
-    have_counter = false;
-    expected_mask = all_mask;
-    partial_mask = 0;
-    partial_streak = 0;
-}
-
-void FrameAssembler::ensureTail(size_t points)
-{
-    const size_t need = (static_cast<size_t>(used_points) + points) * step;
-    if (buffer.size() < need)
-    {
-        buffer.resize(
-            std::max(need, static_cast<size_t>(frame_points_hint) * step));
-    }
-}
-
-uint8_t* FrameAssembler::tail(size_t& capacity_points)
-{
-    ensureTail(segment_points_hint);
-    capacity_points = buffer.size() / step - used_points;
-    return buffer.data() + static_cast<size_t>(used_points) * step;
-}
-
-void FrameAssembler::startFrame(uint64_t number)
-{
-    active = true;
-    joined_mid_frame = false;
-    frame_number = number;
-    seen_mask = 0;
-    used_points = 0;
-    stamp_ns = std::numeric_limits<uint64_t>::max();
-    time_min_us = std::numeric_limits<uint64_t>::max();
-    time_max_us = 0;
-}
-
-void FrameAssembler::emit(bool complete, std::vector<Frame>& out)
-{
-    Frame f;
-    buffer.resize(static_cast<size_t>(used_points) * step);
-    f.data = std::move(buffer);
-    buffer = {};
-    f.points = used_points;
-    f.frame_number = frame_number;
-    f.segment_mask = seen_mask;
-    f.expected_mask = expected_mask;
-    f.complete = complete;
-    f.stamp_ns = stamp_ns;
-    f.time_min_us = time_min_us;
-    f.time_max_us = time_max_us;
-    out.push_back(std::move(f));
-
-    if (complete)
-    {
-        counters.frames_complete++;
-        frame_points_hint =
-            used_points;  // size the next frame's buffer exactly
-        partial_streak = 0;
-    }
-    else
-    {
-        counters.frames_partial++;
-    }
-    have_last_emitted = true;
-    last_emitted_frame = frame_number;
-    active = false;
-    used_points = 0;
-}
-
-void FrameAssembler::closeFrame(bool learn, std::vector<Frame>& out)
-{
-    if (joined_mid_frame)
-    {
-        // the revolution the driver started in the middle of: not a loss
-        have_last_emitted = true;
-        last_emitted_frame = frame_number;
-        active = false;
-        used_points = 0;
-        return;
-    }
-    if (learn)
-    {
-        if (seen_mask == partial_mask)
-        {
-            partial_streak++;
-        }
-        else
-        {
-            partial_mask = seen_mask;
-            partial_streak = 1;
-        }
-        if (partial_streak >= cfg.learn_frames && seen_mask != 0)
-        {
-            expected_mask = seen_mask;
-            counters.expected_mask_changes++;
-            partial_streak = 0;
-        }
-    }
-    if (cfg.publish_partial_frames)
-    {
-        emit(false, out);
-    }
-    else
-    {
-        counters.frames_discarded++;
-        have_last_emitted = true;
-        last_emitted_frame = frame_number;
-        active = false;
-        used_points = 0;
-    }
+    this->frame_open = false;
+    this->frame_points = 0;
+    this->received_mask = 0;
+    this->has_last_closed = false;
+    this->has_telegram_counter = false;
+    this->expected_mask = this->all_segments_mask;
+    this->incomplete_mask = 0;
+    this->incomplete_streak = 0;
 }
 
 void FrameAssembler::flushStale(uint64_t now_ns, std::vector<Frame>& out)
 {
-    if (active && now_ns > last_segment_ns + cfg.stale_frame_ns)
+    if (this->frame_open &&
+        now_ns > this->last_segment_time_ns + this->config.stale_frame_ns)
     {
-        closeFrame(false, out);
+        this->closeFrame(false, out);
     }
 }
 
 compact::Error FrameAssembler::add(
     std::span<const uint8_t> datagram,
-    uint64_t recv_ns,
+    uint64_t receive_time_ns,
     std::vector<Frame>& out)
 {
     // Decode first, into the free space after the current frame's points:
     // only validated header fields decide where the segment belongs.
-    size_t capacity = 0;
-    uint8_t* dst = this->tail(capacity);
     compact::ScanInfo info;
-    compact::Error err = decoder.decode(datagram, dst, capacity, info);
-    if (err == compact::Error::BufferTooSmall)
+    uint8_t* decoded = nullptr;
+    const compact::Error error = this->decodeAtTail(datagram, info, decoded);
+    if (error != compact::Error::None)
     {
-        segment_points_hint = info.points;
-        dst = this->tail(capacity);
-        err = decoder.decode(datagram, dst, capacity, info);
-    }
-    if (err != compact::Error::None)
-    {
-        counters.decode_errors++;
-        counters.last_decode_error = err;
-        return err;
-    }
-    // the segment shape only changes on reconfiguration (then the retry above grows it)
-    segment_points_hint = info.points;
-
-    // to the host clock; point times are whole microseconds
-    const int64_t offset_ns = clock_offset(info, recv_ns);
-    const int64_t offset_us = offset_ns >= 0 ? (offset_ns + 500) / 1000
-                                             : -((-offset_ns + 500) / 1000);
-    if (time_field >= 0 && offset_us != 0)
-    {
-        uint8_t* p = dst + time_field;
-        for (uint32_t i = 0; i < info.points; i++, p += step)
-        {
-            uint64_t t;
-            std::memcpy(&t, p, sizeof(t));
-            t += static_cast<uint64_t>(offset_us);
-            std::memcpy(p, &t, sizeof(t));
-        }
-    }
-    const uint64_t seg_stamp_ns = static_cast<uint64_t>(
-        static_cast<int64_t>(info.start_time_us * 1000) + offset_ns);
-    const uint64_t seg_min_us =
-        info.time_min_us + static_cast<uint64_t>(offset_us);
-    const uint64_t seg_max_us =
-        info.time_max_us + static_cast<uint64_t>(offset_us);
-
-    // last_counter is the highest counter seen; a lower one arriving later
-    // (reordered datagram) fills one of the gaps counted before
-    const uint64_t counter = info.telegram_counter;
-    if (!have_counter || counter > last_counter)
-    {
-        if (have_counter)
-        {
-            counters.telegrams_lost += counter - last_counter - 1;
-        }
-        last_counter = counter;
-        have_counter = true;
-    }
-    else if (counter + 1000 < last_counter)
-    {
-        last_counter = counter;  // sensor restarted
-    }
-    else if (counter < last_counter && counters.telegrams_lost > 0)
-    {
-        counters.telegrams_lost--;
+        this->statistics.decode_errors++;
+        this->statistics.last_decode_error = error;
+        return error;
     }
 
-    if (info.segment >= cfg.segments_per_frame)
+    const SegmentTimes times =
+        this->moveToHostClock(info, receive_time_ns, decoded);
+    this->countLostTelegrams(info.telegram_counter);
+
+    if (info.segment_index >= this->config.segments_per_frame)
     {
-        counters.segments_out_of_range++;
+        this->statistics.segments_out_of_range++;
         return compact::Error::None;
     }
-    const uint32_t bit = 1u << info.segment;
-    const uint64_t f = info.frame;
-
-    // frame numbers restart from 0 when the sensor reboots
-    const bool have_ref = active || have_last_emitted;
-    const uint64_t ref = active ? frame_number : last_emitted_frame;
-    if (have_ref && f + 2 < ref)
+    if (this->placeSegment(info, decoded, out))
     {
-        counters.sensor_restarts++;
-        if (active)
-        {
-            // keep the just-decoded points: move them to the buffer start
-            std::memmove(
-                buffer.data(),
-                dst,
-                static_cast<size_t>(info.points) * step);
-            dst = buffer.data();
-        }
-        reset();
-    }
-
-    if (active && f == frame_number)
-    {
-        if (seen_mask & bit)
-        {
-            counters.segments_duplicate++;
-            return compact::Error::None;
-        }
-    }
-    else if (
-        (active && f < frame_number) ||
-        (!active && have_last_emitted && f <= last_emitted_frame))
-    {
-        counters.segments_late++;
-        return compact::Error::None;
-    }
-    else if (active)  // f > frame_number: the current frame ended incomplete
-    {
-        const std::vector<uint8_t> pending(
-            dst,
-            dst + static_cast<size_t>(info.points) * step);
-        counters.frames_missed += f - frame_number - 1;
-        closeFrame(true, out);
-        startFrame(f);
-        ensureTail(info.points);
-        std::memcpy(buffer.data(), pending.data(), pending.size());
-    }
-    else  // no frame open; the segment already sits at the buffer start
-    {
-        if (have_last_emitted && f > last_emitted_frame + 1)
-        {
-            counters.frames_missed += f - last_emitted_frame - 1;
-        }
-        const bool first_since_reset = !have_last_emitted;
-        startFrame(f);
-        joined_mid_frame =
-            first_since_reset &&
-            (info.segment !=
-             static_cast<uint64_t>(std::countr_zero(expected_mask)));
-    }
-
-    const uint32_t first_point = used_points;
-    seen_mask |= bit;
-    used_points += info.points;
-    stamp_ns = std::min(stamp_ns, seg_stamp_ns);
-    time_min_us = std::min(time_min_us, seg_min_us);
-    time_max_us = std::max(time_max_us, seg_max_us);
-    last_segment_ns = recv_ns;
-    counters.segments++;
-
-    if (!(expected_mask & bit))
-    {
-        expected_mask |= bit;
-        counters.expected_mask_changes++;
-        partial_streak = 0;
-    }
-    if (segment_hook && !joined_mid_frame)  // that frame is never emitted
-    {
-        segment_hook(info, datagram, frame_number, first_point);
-    }
-    if ((seen_mask & expected_mask) == expected_mask)
-    {
-        emit(true, out);
+        this->acceptSegment(info, times, receive_time_ns, datagram, out);
     }
     return compact::Error::None;
+}
+
+
+
+// --- Steps of add() ----------------------------------------------------------
+
+compact::Error FrameAssembler::decodeAtTail(
+    std::span<const uint8_t> datagram,
+    compact::ScanInfo& info,
+    uint8_t*& decoded)
+{
+    size_t capacity = 0;
+    decoded = this->tail(capacity);
+    compact::Error error =
+        this->decoder.decode(datagram, decoded, capacity, info);
+    if (error == compact::Error::BufferTooSmall)
+    {
+        this->segment_points_hint = info.num_points;
+        decoded = this->tail(capacity);
+        error = this->decoder.decode(datagram, decoded, capacity, info);
+    }
+    if (error == compact::Error::None)
+    {
+        // the segment shape only changes on reconfiguration (then the retry
+        // above grows the buffer)
+        this->segment_points_hint = info.num_points;
+    }
+    return error;
+}
+
+/* Adds the host - sensor offset to every point time (whole microseconds)
+ * and returns the segment's times on the host clock. */
+FrameAssembler::SegmentTimes FrameAssembler::moveToHostClock(
+    const compact::ScanInfo& info,
+    uint64_t receive_time_ns,
+    uint8_t* decoded)
+{
+    const int64_t offset_ns = this->clock_offset(info, receive_time_ns);
+    const int64_t offset_us = offset_ns >= 0 ? (offset_ns + 500) / 1000
+                                             : -((-offset_ns + 500) / 1000);
+    if (this->time_offset >= 0 && offset_us != 0)
+    {
+        uint8_t* time_field = decoded + this->time_offset;
+        for (uint32_t i = 0; i < info.num_points;
+             i++, time_field += this->point_step)
+        {
+            uint64_t time_us;
+            std::memcpy(&time_us, time_field, sizeof(time_us));
+            time_us += static_cast<uint64_t>(offset_us);
+            std::memcpy(time_field, &time_us, sizeof(time_us));
+        }
+    }
+    return SegmentTimes{
+        .stamp_ns = static_cast<uint64_t>(
+            static_cast<int64_t>(info.start_time_us * 1000) + offset_ns),
+        .time_min_us = info.time_min_us + static_cast<uint64_t>(offset_us),
+        .time_max_us = info.time_max_us + static_cast<uint64_t>(offset_us)};
+}
+
+/* highest_telegram_counter is the highest counter seen; a lower one arriving
+ * later (reordered datagram) fills one of the gaps counted before. */
+void FrameAssembler::countLostTelegrams(uint64_t telegram_counter)
+{
+    if (!this->has_telegram_counter ||
+        telegram_counter > this->highest_telegram_counter)
+    {
+        if (this->has_telegram_counter)
+        {
+            this->statistics.telegrams_lost +=
+                telegram_counter - this->highest_telegram_counter - 1;
+        }
+        this->highest_telegram_counter = telegram_counter;
+        this->has_telegram_counter = true;
+    }
+    else if (telegram_counter + 1000 < this->highest_telegram_counter)
+    {
+        this->highest_telegram_counter = telegram_counter;  // sensor restarted
+    }
+    else if (
+        telegram_counter < this->highest_telegram_counter &&
+        this->statistics.telegrams_lost > 0)
+    {
+        this->statistics.telegrams_lost--;
+    }
+}
+
+/* Decides which frame a decoded segment belongs to: the current one, a new
+ * one (closing the current one incomplete), or none (duplicate or late).
+ * Afterwards the segment's points sit right after the frame's points.
+ * Returns false when the segment is dropped. */
+bool FrameAssembler::placeSegment(
+    const compact::ScanInfo& info,
+    uint8_t*& decoded,
+    std::vector<Frame>& out)
+{
+    const uint32_t segment_bit = 1u << info.segment_index;
+    const uint64_t number = info.frame_number;
+    const size_t segment_bytes =
+        static_cast<size_t>(info.num_points) * this->point_step;
+
+    // frame numbers restart from 0 when the sensor reboots
+    const bool has_reference = this->frame_open || this->has_last_closed;
+    const uint64_t reference =
+        this->frame_open ? this->frame_number : this->last_closed_frame;
+    if (has_reference && number + 2 < reference)
+    {
+        this->statistics.sensor_restarts++;
+        if (this->frame_open)
+        {
+            // keep the just-decoded points: move them to the buffer start
+            std::memmove(this->frame_buffer.data(), decoded, segment_bytes);
+            decoded = this->frame_buffer.data();
+        }
+        this->reset();
+    }
+
+    if (this->frame_open && number == this->frame_number)
+    {
+        if (this->received_mask & segment_bit)
+        {
+            this->statistics.segments_duplicate++;
+            return false;
+        }
+        return true;
+    }
+    if ((this->frame_open && number < this->frame_number) ||
+        (!this->frame_open && this->has_last_closed &&
+         number <= this->last_closed_frame))
+    {
+        this->statistics.segments_late++;
+        return false;
+    }
+
+    if (this->frame_open)
+    {
+        // a later frame: the current one ended incomplete
+        const std::vector<uint8_t> pending(decoded, decoded + segment_bytes);
+        this->statistics.frames_missed += number - this->frame_number - 1;
+        this->closeFrame(true, out);
+        this->startFrame(number);
+        this->ensureTail(info.num_points);
+        std::memcpy(this->frame_buffer.data(), pending.data(), pending.size());
+        decoded = this->frame_buffer.data();
+        return true;
+    }
+
+    // no frame open; the segment already sits at the buffer start
+    if (this->has_last_closed && number > this->last_closed_frame + 1)
+    {
+        this->statistics.frames_missed += number - this->last_closed_frame - 1;
+    }
+    const bool first_since_reset = !this->has_last_closed;
+    this->startFrame(number);
+    this->joined_mid_frame =
+        first_since_reset &&
+        (info.segment_index !=
+         static_cast<uint64_t>(std::countr_zero(this->expected_mask)));
+    return true;
+}
+
+void FrameAssembler::acceptSegment(
+    const compact::ScanInfo& info,
+    const SegmentTimes& times,
+    uint64_t receive_time_ns,
+    std::span<const uint8_t> datagram,
+    std::vector<Frame>& out)
+{
+    const uint32_t segment_bit = 1u << info.segment_index;
+    const uint32_t first_point = this->frame_points;
+    this->received_mask |= segment_bit;
+    this->frame_points += info.num_points;
+    this->frame_stamp_ns = std::min(this->frame_stamp_ns, times.stamp_ns);
+    this->frame_time_min_us =
+        std::min(this->frame_time_min_us, times.time_min_us);
+    this->frame_time_max_us =
+        std::max(this->frame_time_max_us, times.time_max_us);
+    this->last_segment_time_ns = receive_time_ns;
+    this->statistics.segments++;
+
+    if (!(this->expected_mask & segment_bit))
+    {
+        this->expected_mask |= segment_bit;
+        this->statistics.expected_mask_changes++;
+        this->incomplete_streak = 0;
+    }
+    // the frame joined mid-revolution is never emitted
+    if (this->segment_hook && !this->joined_mid_frame)
+    {
+        this->segment_hook(info, datagram, this->frame_number, first_point);
+    }
+    if ((this->received_mask & this->expected_mask) == this->expected_mask)
+    {
+        this->emit(true, out);
+    }
+}
+
+
+
+// --- Frames ------------------------------------------------------------------
+
+void FrameAssembler::startFrame(uint64_t frame_number)
+{
+    this->frame_open = true;
+    this->joined_mid_frame = false;
+    this->frame_number = frame_number;
+    this->received_mask = 0;
+    this->frame_points = 0;
+    this->frame_stamp_ns = std::numeric_limits<uint64_t>::max();
+    this->frame_time_min_us = std::numeric_limits<uint64_t>::max();
+    this->frame_time_max_us = 0;
+}
+
+void FrameAssembler::closeFrame(bool learn, std::vector<Frame>& out)
+{
+    if (this->joined_mid_frame)
+    {
+        // the revolution the driver started in the middle of: not a loss
+        this->forgetFrame();
+        return;
+    }
+    if (learn)
+    {
+        this->learnExpectedSegments();
+    }
+    if (this->config.publish_partial_frames)
+    {
+        this->emit(false, out);
+    }
+    else
+    {
+        this->statistics.frames_discarded++;
+        this->forgetFrame();
+    }
+}
+
+void FrameAssembler::emit(bool complete, std::vector<Frame>& out)
+{
+    Frame frame;
+    this->frame_buffer.resize(
+        static_cast<size_t>(this->frame_points) * this->point_step);
+    frame.data = std::move(this->frame_buffer);
+    this->frame_buffer = {};
+    frame.num_points = this->frame_points;
+    frame.frame_number = this->frame_number;
+    frame.segment_mask = this->received_mask;
+    frame.expected_mask = this->expected_mask;
+    frame.complete = complete;
+    frame.stamp_ns = this->frame_stamp_ns;
+    frame.time_min_us = this->frame_time_min_us;
+    frame.time_max_us = this->frame_time_max_us;
+    out.push_back(std::move(frame));
+
+    if (complete)
+    {
+        this->statistics.frames_complete++;
+        // size the next frame's buffer exactly
+        this->frame_points_hint = this->frame_points;
+        this->incomplete_streak = 0;
+    }
+    else
+    {
+        this->statistics.frames_partial++;
+    }
+    this->forgetFrame();
+}
+
+/* Closes the current frame without emitting it. */
+void FrameAssembler::forgetFrame()
+{
+    this->has_last_closed = true;
+    this->last_closed_frame = this->frame_number;
+    this->frame_open = false;
+    this->frame_points = 0;
+}
+
+/* Frames that keep ending with the same segments missing: those segments
+ * aren't sent (a narrowed output range omits whole segments). */
+void FrameAssembler::learnExpectedSegments()
+{
+    if (this->received_mask == this->incomplete_mask)
+    {
+        this->incomplete_streak++;
+    }
+    else
+    {
+        this->incomplete_mask = this->received_mask;
+        this->incomplete_streak = 1;
+    }
+    if (this->incomplete_streak >= this->config.learn_frames &&
+        this->received_mask != 0)
+    {
+        this->expected_mask = this->received_mask;
+        this->statistics.expected_mask_changes++;
+        this->incomplete_streak = 0;
+    }
+}
+
+
+
+// --- Buffer ------------------------------------------------------------------
+
+void FrameAssembler::ensureTail(size_t num_points)
+{
+    const size_t needed =
+        (static_cast<size_t>(this->frame_points) + num_points) *
+        this->point_step;
+    if (this->frame_buffer.size() < needed)
+    {
+        this->frame_buffer.resize(
+            std::max(
+                needed,
+                static_cast<size_t>(this->frame_points_hint) *
+                    this->point_step));
+    }
+}
+
+/* The free space after the current frame's points, with room for at least
+ * one segment of the last size seen. */
+uint8_t* FrameAssembler::tail(size_t& capacity_points)
+{
+    this->ensureTail(this->segment_points_hint);
+    capacity_points =
+        this->frame_buffer.size() / this->point_step - this->frame_points;
+    return this->frame_buffer.data() +
+           static_cast<size_t>(this->frame_points) * this->point_step;
 }
 
 }  // namespace multiscan

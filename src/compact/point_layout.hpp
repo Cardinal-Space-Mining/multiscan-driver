@@ -87,6 +87,7 @@ class PointLayout
 public:
     static constexpr int32_t ABSENT = -1;
 
+public:
     /* Every sensor field: x y z intensity range azimuth elevation layer echo
      * index tl th reflective (52 bytes); not artifact */
     static PointLayout all();
@@ -99,18 +100,29 @@ public:
         const std::vector<std::string>& names,
         std::string& error);
 
-    int32_t offset(Field f) const { return offsets[static_cast<size_t>(f)]; }
-    bool has(Field f) const { return offset(f) != ABSENT; }
-    uint32_t pointStep() const { return point_step; }
-    const std::vector<FieldDescriptor>& fields() const { return descriptors; }
+public:
+    /* Byte offset of a field within a point, or ABSENT. */
+    int32_t offset(Field field) const
+    {
+        return this->field_offsets[static_cast<size_t>(field)];
+    }
+    bool has(Field field) const { return this->offset(field) != ABSENT; }
+    uint32_t pointStep() const { return this->point_step; }
+    const std::vector<FieldDescriptor>& fields() const
+    {
+        return this->field_descriptors;
+    }
 
-private:
-    explicit PointLayout(
-        const std::array<bool, static_cast<size_t>(Field::COUNT)>& enabled);
+protected:
+    using FieldFlags = std::array<bool, static_cast<size_t>(Field::COUNT)>;
 
-    std::array<int32_t, static_cast<size_t>(Field::COUNT)> offsets;
-    uint32_t point_step = 0;
-    std::vector<FieldDescriptor> descriptors;
+protected:
+    explicit PointLayout(const FieldFlags& enabled);
+
+protected:
+    std::array<int32_t, static_cast<size_t>(Field::COUNT)> field_offsets;
+    uint32_t point_step{0};
+    std::vector<FieldDescriptor> field_descriptors;
 };
 
 }  // namespace multiscan

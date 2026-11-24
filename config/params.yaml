@@ -50,8 +50,9 @@
     # sensor.interlaced. Points of the high-resolution layers are left alone.
     ghost_filter:
       enabled: false
-      model_file: ""            # artifact_full.model.txt (exported by annotator_app)
-      fallback_model_file: ""   # used if model_file can't be loaded, e.g. artifact_xyz.model.txt
+      # a path, or the name of a model in models/ (installed with the driver)
+      model_file: "artifact_full"           # range and intensity
+      fallback_model_file: "artifact_xyz"   # range only; if model_file can't be loaded
       mode: "drop"              # drop: remove flagged points | annotate: add field "artifact"
                                 #   (probability, -1 = not classified) and keep every point
       threshold: -1.0           # flag from this probability; < 0 = the model's own (0.3)

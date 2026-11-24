@@ -1,3 +1,42 @@
+/*******************************************************************************
+*   Copyright (C) 2024-2026 Cardinal Space Mining Club                         *
+*                                                                              *
+*                                 ;xxxxxxx:                                    *
+*                                ;$$$$$$$$$       ...::..                      *
+*                                $$$$$$$$$$x   .:::::::::::..                  *
+*                             x$$$$$$$$$$$$$$::::::::::::::::.                 *
+*                         :$$$$$&X;      .xX:::::::::::::.::...                *
+*                 .$$Xx++$$$$+  :::.     :;:   .::::::.  ....  :               *
+*                :$$$$$$$$$  ;:      ;xXXXXXXXx  .::.  .::::. .:.              *
+*               :$$$$$$$$: ;      ;xXXXXXXXXXXXXx: ..::::::  .::.              *
+*              ;$$$$$$$$ ::   :;XXXXXXXXXXXXXXXXXX+ .::::.  .:::               *
+*               X$$$$$X : +XXXXXXXXXXXXXXXXXXXXXXXX; .::  .::::.               *
+*                .$$$$ :xXXXXXXXXXXXXXXXXXXXXXXXXXXX.   .:::::.                *
+*                 X$$X XXXXXXXXXXXXXXXXXXXXXXXXXXXXx:  .::::.                  *
+*                 $$$:.XXXXXXXXXXXXXXXXXXXXXXXXXXX  ;; ..:.                    *
+*                 $$& :XXXXXXXXXXXXXXXXXXXXXXXX;  +XX; X$$;                    *
+*                 $$$: XXXXXXXXXXXXXXXXXXXXXX; :XXXXX; X$$;                    *
+*                 X$$X XXXXXXXXXXXXXXXXXXX; .+XXXXXXX; $$$                     *
+*                 $$$$ ;XXXXXXXXXXXXXXX+  +XXXXXXXXx+ X$$$+                    *
+*               x$$$$$X ;XXXXXXXXXXX+ :xXXXXXXXX+   .;$$$$$$                   *
+*              +$$$$$$$$ ;XXXXXXx;;+XXXXXXXXX+    : +$$$$$$$$                  *
+*               +$$$$$$$$: xXXXXXXXXXXXXXX+      ; X$$$$$$$$                   *
+*                :$$$$$$$$$. +XXXXXXXXX;      ;: x$$$$$$$$$                    *
+*                ;x$$$$XX$$$$+ .;+X+      :;: :$$$$$xX$$$X                     *
+*               ;;;;;;;;;;X$$$$$$$+      :X$$$$$$&.                            *
+*               ;;;;;;;:;;;;;x$$$$$$$$$$$$$$$$x.                               *
+*               :;;;;;;;;;;;;.  :$$$$$$$$$$X                                   *
+*                .;;;;;;;;:;;    +$$$$$$$$$                                    *
+*                  .;;;;;;.       X$$$$$$$:                                    *
+*                                                                              *
+*   Unless required by applicable law or agreed to in writing, software        *
+*   distributed under the License is distributed on an "AS IS" BASIS,          *
+*   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   *
+*   See the License for the specific language governing permissions and        *
+*   limitations under the License.                                             *
+*                                                                              *
+*******************************************************************************/
+
 /*  Checks that the independent Compact reader/writer (support/compact_packet.hpp)
  *  reproduces real sensor traffic byte for byte, and records the sensor
  *  behaviour the rewrite relies on, as observed on 2026-11-22 with a
@@ -86,7 +125,7 @@ TEST(CompactPacket, SyntheticSegmentsMatchRealSizes)
         serialize(makeSegment(SyntheticConfig::live(), 3, 7)).size(),
         3456u);
     SyntheticConfig all;
-    all.echoes = 3;
+    all.num_echoes = 3;
     EXPECT_EQ(serialize(makeSegment(all, 3, 7)).size(), 14160u);
 }
 
@@ -94,9 +133,9 @@ TEST(CompactPacket, SyntheticSegmentsRoundTrip)
 {
     std::vector<SyntheticConfig> cfgs(6);
     cfgs[0] = SyntheticConfig::live();
-    cfgs[2].echoes = 3;
-    cfgs[3].content_echoes = ECHO_HAS_DISTANCE;
-    cfgs[4].content_beams = BEAM_HAS_PROPERTIES;
+    cfgs[2].num_echoes = 3;
+    cfgs[3].echo_content = ECHO_HAS_DISTANCE;
+    cfgs[4].beam_content = BEAM_HAS_PROPERTIES;
     cfgs[5].distance_scale = 2.5f;
     cfgs[5].layers = {
         true,
@@ -152,9 +191,9 @@ TEST(SensorBehaviour, FramesAreTwelveSegmentsKeyedByFrameNumber)
             // every module of a telegram carries the same segment and frame numbers
             EXPECT_EQ(m.segment_counter, t[i].modules[0].segment_counter);
             EXPECT_EQ(m.frame_number, t[i].modules[0].frame_number);
-            EXPECT_EQ(m.lines, 7u);
-            EXPECT_EQ(m.beams, 30u);
-            EXPECT_EQ(m.echoes, 1u);
+            EXPECT_EQ(m.num_lines, 7u);
+            EXPECT_EQ(m.num_beams, 30u);
+            EXPECT_EQ(m.num_echoes, 1u);
         }
         // the telegram counter counts scan telegrams only (IMU telegrams are interleaved)
         if (i)
@@ -178,15 +217,15 @@ TEST(SensorBehaviour, AllLayersModuleOrderIsLowResThenHighRes)
     ASSERT_FALSE(t.empty());
     const auto& m = t[0].modules;
     ASSERT_EQ(m.size(), 4u);
-    EXPECT_EQ(m[0].lines, 7u);
-    EXPECT_EQ(m[1].lines, 7u);
-    EXPECT_EQ(m[2].lines, 1u);
-    EXPECT_EQ(m[2].beams, 240u);
-    EXPECT_EQ(m[3].lines, 1u);
-    EXPECT_EQ(m[3].beams, 240u);
+    EXPECT_EQ(m[0].num_lines, 7u);
+    EXPECT_EQ(m[1].num_lines, 7u);
+    EXPECT_EQ(m[2].num_lines, 1u);
+    EXPECT_EQ(m[2].num_beams, 240u);
+    EXPECT_EQ(m[3].num_lines, 1u);
+    EXPECT_EQ(m[3].num_beams, 240u);
     for (const auto& mm : m)
     {
-        EXPECT_EQ(mm.echoes, 3u);
+        EXPECT_EQ(mm.num_echoes, 3u);
     }
 }
 
@@ -210,7 +249,7 @@ TEST(SensorBehaviour, InterlacedShiftsAzimuthByEighthDegreePerFrame)
         {
             theta.push_back(t.modules[0].theta_start[0]);
         }
-        EXPECT_EQ(t.modules[0].beams, 30u);
+        EXPECT_EQ(t.modules[0].num_beams, 30u);
     }
     ASSERT_GE(theta.size(), 9u);
     constexpr double EIGHTH_DEG = 0.125 * M_PI / 180.0;

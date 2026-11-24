@@ -2,7 +2,7 @@
  *
  *  File layout (little endian):
  *    header : 8 bytes "MSCAP001"
- *    record : u64 recv_time_ns (CLOCK_REALTIME, kernel receive timestamp)
+ *    record : u64 receive_time_ns (CLOCK_REALTIME, kernel receive timestamp)
  *             u16 destination UDP port
  *             u32 datagram length
  *             u8  datagram[length]
@@ -23,7 +23,7 @@ namespace ms_test
 
 struct CapturedDatagram
 {
-    uint64_t recv_time_ns = 0;
+    uint64_t receive_time_ns = 0;
     uint16_t port = 0;
     std::vector<uint8_t> data;
 };
@@ -53,7 +53,7 @@ inline std::vector<CapturedDatagram> readCapture(const std::string& path)
     {
         CapturedDatagram d;
         uint32_t len;
-        std::memcpy(&d.recv_time_ns, &bytes[off], 8);
+        std::memcpy(&d.receive_time_ns, &bytes[off], 8);
         std::memcpy(&d.port, &bytes[off + 8], 2);
         std::memcpy(&len, &bytes[off + 10], 4);
         off += 14;

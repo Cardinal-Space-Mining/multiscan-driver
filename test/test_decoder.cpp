@@ -1,3 +1,42 @@
+/*******************************************************************************
+*   Copyright (C) 2024-2026 Cardinal Space Mining Club                         *
+*                                                                              *
+*                                 ;xxxxxxx:                                    *
+*                                ;$$$$$$$$$       ...::..                      *
+*                                $$$$$$$$$$x   .:::::::::::..                  *
+*                             x$$$$$$$$$$$$$$::::::::::::::::.                 *
+*                         :$$$$$&X;      .xX:::::::::::::.::...                *
+*                 .$$Xx++$$$$+  :::.     :;:   .::::::.  ....  :               *
+*                :$$$$$$$$$  ;:      ;xXXXXXXXx  .::.  .::::. .:.              *
+*               :$$$$$$$$: ;      ;xXXXXXXXXXXXXx: ..::::::  .::.              *
+*              ;$$$$$$$$ ::   :;XXXXXXXXXXXXXXXXXX+ .::::.  .:::               *
+*               X$$$$$X : +XXXXXXXXXXXXXXXXXXXXXXXX; .::  .::::.               *
+*                .$$$$ :xXXXXXXXXXXXXXXXXXXXXXXXXXXX.   .:::::.                *
+*                 X$$X XXXXXXXXXXXXXXXXXXXXXXXXXXXXx:  .::::.                  *
+*                 $$$:.XXXXXXXXXXXXXXXXXXXXXXXXXXX  ;; ..:.                    *
+*                 $$& :XXXXXXXXXXXXXXXXXXXXXXXX;  +XX; X$$;                    *
+*                 $$$: XXXXXXXXXXXXXXXXXXXXXX; :XXXXX; X$$;                    *
+*                 X$$X XXXXXXXXXXXXXXXXXXX; .+XXXXXXX; $$$                     *
+*                 $$$$ ;XXXXXXXXXXXXXXX+  +XXXXXXXXx+ X$$$+                    *
+*               x$$$$$X ;XXXXXXXXXXX+ :xXXXXXXXX+   .;$$$$$$                   *
+*              +$$$$$$$$ ;XXXXXXx;;+XXXXXXXXX+    : +$$$$$$$$                  *
+*               +$$$$$$$$: xXXXXXXXXXXXXXX+      ; X$$$$$$$$                   *
+*                :$$$$$$$$$. +XXXXXXXXX;      ;: x$$$$$$$$$                    *
+*                ;x$$$$XX$$$$+ .;+X+      :;: :$$$$$xX$$$X                     *
+*               ;;;;;;;;;;X$$$$$$$+      :X$$$$$$&.                            *
+*               ;;;;;;;:;;;;;x$$$$$$$$$$$$$$$$x.                               *
+*               :;;;;;;;;;;;;.  :$$$$$$$$$$X                                   *
+*                .;;;;;;;;:;;    +$$$$$$$$$                                    *
+*                  .;;;;;;.       X$$$$$$$:                                    *
+*                                                                              *
+*   Unless required by applicable law or agreed to in writing, software        *
+*   distributed under the License is distributed on an "AS IS" BASIS,          *
+*   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   *
+*   See the License for the specific language governing permissions and        *
+*   limitations under the License.                                             *
+*                                                                              *
+*******************************************************************************/
+
 /*  The Compact decoder (src/compact/) against the old driver and the spec:
  *    - published clouds are byte-identical to what the old driver (vendored
  *      sick_scan_xd parser) published, on every capture and synthetic
@@ -193,32 +232,32 @@ TEST(Decoder, ByteIdenticalToOldDriverOnSyntheticConfigurations)
     cfgs.emplace_back("all layers", SyntheticConfig{});
     {
         SyntheticConfig c;
-        c.echoes = 3;
+        c.num_echoes = 3;
         cfgs.emplace_back("3 echoes", c);
     }
     {
         SyntheticConfig c = SyntheticConfig::live();
-        c.content_echoes = ECHO_HAS_DISTANCE;
+        c.echo_content = ECHO_HAS_DISTANCE;
         cfgs.emplace_back("no rssi", c);
     }
     {
         SyntheticConfig c = SyntheticConfig::live();
-        c.content_echoes = ECHO_HAS_RSSI;
+        c.echo_content = ECHO_HAS_RSSI;
         cfgs.emplace_back("no distance", c);
     }
     {
         SyntheticConfig c = SyntheticConfig::live();
-        c.content_beams = BEAM_HAS_PROPERTIES;
+        c.beam_content = BEAM_HAS_PROPERTIES;
         cfgs.emplace_back("no per-beam azimuth", c);
     }
     {
         SyntheticConfig c = SyntheticConfig::live();
-        c.content_beams = BEAM_HAS_AZIMUTH;
+        c.beam_content = BEAM_HAS_AZIMUTH;
         cfgs.emplace_back("no beam properties", c);
     }
     {
         SyntheticConfig c = SyntheticConfig::live();
-        c.content_beams = 0;
+        c.beam_content = 0;
         cfgs.emplace_back("no beam data", c);
     }
     {
@@ -294,9 +333,9 @@ TEST(Decoder, EverySegmentMatchesSpecExactly)
                 compact::Error::None)
                 << file;
             const auto exp = expectedPoints(*t, 1);
-            ASSERT_EQ(info.points, exp.size());
-            EXPECT_EQ(info.segment, t->modules[0].segment_counter);
-            EXPECT_EQ(info.frame, t->modules[0].frame_number);
+            ASSERT_EQ(info.num_points, exp.size());
+            EXPECT_EQ(info.segment_index, t->modules[0].segment_counter);
+            EXPECT_EQ(info.frame_number, t->modules[0].frame_number);
             EXPECT_EQ(info.telegram_counter, t->telegram_counter);
             EXPECT_EQ(info.transmit_time_us, t->transmit_time_us);
             for (size_t i = 0; i < exp.size(); i++)
@@ -322,7 +361,7 @@ TEST(Decoder, ShapeCacheFollowsReconfiguration)
     compact::ScanDecoder dec(PointLayout::all());
     std::vector<uint8_t> out(4096 * 52);
     SyntheticConfig a = SyntheticConfig::live(), b;
-    b.echoes = 2;
+    b.num_echoes = 2;
     for (int i = 0; i < 6; i++)
     {
         const auto t =
@@ -332,7 +371,7 @@ TEST(Decoder, ShapeCacheFollowsReconfiguration)
             dec.decode(serialize(t), out.data(), 4096, info),
             compact::Error::None);
         const auto exp = expectedPoints(t, 1);
-        ASSERT_EQ(info.points, exp.size()) << i;
+        ASSERT_EQ(info.num_points, exp.size()) << i;
         for (size_t k = 0; k < exp.size(); k++)
         {
             const auto got = readAllFieldsPoint(out.data() + k * 52);
@@ -449,8 +488,8 @@ TEST(PointLayout, SubsetIsProjectionOfFullLayout)
     compact::ScanInfo ia, ib;
     ASSERT_EQ(dfull.decode(bytes, a.data(), 4096, ia), compact::Error::None);
     ASSERT_EQ(dsub.decode(bytes, b.data(), 4096, ib), compact::Error::None);
-    ASSERT_EQ(ia.points, ib.points);
-    for (size_t i = 0; i < ia.points; i++)
+    ASSERT_EQ(ia.num_points, ib.num_points);
+    for (size_t i = 0; i < ia.num_points; i++)
     {
         for (Field f :
              {Field::X,
@@ -537,7 +576,7 @@ TEST(Decoder, RejectsMalformedTelegrams)
         EXPECT_EQ(
             dec.decode(good, out.data(), 100, info),
             compact::Error::BufferTooSmall);
-        EXPECT_EQ(info.points, 420u);
+        EXPECT_EQ(info.num_points, 420u);
     }
     {
         compact::ImuSample s;
@@ -587,7 +626,7 @@ TEST(Decoder, FuzzedHeadersNeverOverrun)
         if (dec.decode(b, out.data(), CAP, info) == compact::Error::None)
         {
             accepted++;
-            ASSERT_LE(info.points, CAP);
+            ASSERT_LE(info.num_points, CAP);
         }
         // guard point after the capacity must never be written
         for (size_t i = CAP * 52; i < out.size(); i++)

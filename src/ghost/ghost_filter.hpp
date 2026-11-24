@@ -37,42 +37,34 @@
 *                                                                              *
 *******************************************************************************/
 
-/*  Ghost point (artifact) filter: the classifier trained in ghost-ml-ws
- *  (annotator_app), run on every frame as its segments arrive.
+/*  Ghost point (artifact) filter: the classifier trained in ghost-ml-ws, run
+ *  on every frame as its segments arrive.
  *
- *  - artifact_filter/artifact_filter.hpp is a copy of ghost-ml-ws
- *    src/ghost_tester/include/artifact_filter/artifact_filter.hpp; keep it
- *    identical (it mirrors the Python feature code, see its header).
- *  - Each accepted segment is decoded again into the fields the filter needs
- *    (same decoder, so the points are the same and in the same order as in
- *    the published frame) and handed to the filter. A grid cell is classified
+ *  - The classifier itself is include/multiscan_driver/artifact_filter/
+ *    (shared with ghost-ml-ws, which builds its tools against it).
+ *  - Each accepted segment is decoded again into the fields the classifier
+ *    needs (same decoder, so the points are the same and in the same order
+ *    as in the published frame) and handed to it. A grid cell is classified
  *    as soon as every cell its inputs look at has arrived, so when the last
  *    segment of a frame arrives only the cells next to it are left (about a
- *    fifth on the multiScan: its upper and lower seven layers are sent half a
- *    revolution apart). The result is identical to classifying the whole
+ *    fifth on the multiScan: its upper and lower seven layers are sent half
+ *    a revolution apart). The result is identical to classifying the whole
  *    frame at once.
  *  - The high-resolution layers (ids 5 and 13) are not part of the model's
  *    grid: their points are not classified and never dropped.
- *  - GhostFilter is synchronous; GhostFilterWorker runs it on its own thread
- *    and hands finished frames to a callback.
+ *  - GhostFilter is synchronous; GhostFilterWorker (ghost_filter_worker.hpp)
+ *    runs it on its own thread.
  */
 #pragma once
 
-#include <chrono>
-#include <condition_variable>
 #include <cstdint>
-#include <deque>
-#include <functional>
-#include <memory>
-#include <mutex>
 #include <span>
-#include <string>
-#include <thread>
 #include <vector>
+
+#include <multiscan_driver/artifact_filter/filter.hpp>
 
 #include "compact/decoder.hpp"
 #include "frame_assembler.hpp"
-#include "ghost/artifact_filter/artifact_filter.hpp"
 
 
 namespace multiscan
@@ -89,33 +81,37 @@ public:
 
     struct Config
     {
-        Mode mode = Mode::Drop;
-        /* probability from which a point is an artifact; < 0: the model's */
-        double threshold = -1.;
-        /* stop evaluating trees for clearly clean returns (see the header) */
-        bool early_exit = true;
-        /* as the published decoder's (DecodeOptions::echo_selection) */
-        uint32_t echo_selection = 1;
+        Mode mode{Mode::Drop};
+        /* Probability from which a point is an artifact; < 0: the model's. */
+        double threshold{-1.};
+        /* Stop evaluating trees for clearly clean returns (see
+         * artifact_filter::Model::predict). */
+        bool early_exit{true};
+        /* As the published decoder's (DecodeOptions::echo_selection). */
+        uint32_t echo_selection{1};
     };
 
     struct Result
     {
-        bool filtered = false;  // false: the frame is published as it is
-        uint32_t classified = 0;
-        uint32_t flagged = 0;  // dropped, in Mode::Drop
-        bool skipped = false;  // not filtered because segments were skipped
+        bool filtered{false};  // false: the frame is published as it is
+        /* Not filtered because the worker skipped segments (overloaded). */
+        bool skipped{false};
+        uint32_t points_classified{0};
+        uint32_t points_flagged{0};  // dropped, in Mode::Drop
     };
 
+public:
     /* Throws std::runtime_error if the model doesn't fit this sensor. */
     GhostFilter(artifact_filter::Model model, Config config);
 
+public:
     /* A segment the assembler accepted (its SegmentHook). With skip, the
      * segment is not looked at and its frame is left unfiltered. */
     void addSegment(
         std::span<const uint8_t> datagram,
         uint64_t frame_number,
         uint32_t first_point,
-        uint32_t points,
+        uint32_t num_points,
         bool skip = false);
 
     /* Applies the result to a frame the assembler emitted. `layout` is the
@@ -125,128 +121,76 @@ public:
     /* Forget the earlier scans; the frame in progress is left unfiltered. */
     void reset();
 
-    const artifact_filter::Model& model() const { return filter.model(); }
-    bool early_exit_active() const { return filter.early_exit(); }
-    double threshold() const { return thr; }
-    const Config& config() const { return cfg; }
+public:
+    const artifact_filter::Model& model() const { return this->filter.model(); }
+    bool earlyExitActive() const { return this->filter.earlyExitActive(); }
+    double threshold() const { return this->flag_threshold; }
+    const Config& config() const { return this->filter_config; }
 
-private:
-    struct Run  // consecutive points handed to the filter
+protected:
+    /* Consecutive points of a frame handed to the classifier. */
+    struct PointRun
     {
-        uint32_t frame_point;  // index in the frame
-        uint32_t count;
+        uint32_t first_frame_point;
+        uint32_t num_points;
     };
+
     struct FrameState
     {
-        bool valid = false;
-        bool broken = false;   // skipped or inconsistent: not filtered
-        bool skipped = false;  // broken because segments were skipped
-        bool begun = false;    // the filter has begun this frame
-        uint64_t number = 0;
-        std::vector<Run> runs;
-        std::vector<float> prob;  // per point handed to the filter
+        bool valid{false};
+        bool broken{false};   // skipped or inconsistent: not filtered
+        bool skipped{false};  // broken because segments were skipped
+        bool begun{false};    // the classifier has begun this frame
+        uint64_t frame_number{0};
+        std::vector<PointRun> runs;
+        std::vector<float> probability;  // per point handed to the classifier
     };
 
-    void finishOpen();
+    /* Byte offsets in the classifier's own point layout. */
+    struct FieldOffsets
+    {
+        int32_t intensity;
+        int32_t azimuth;
+        int32_t elevation;
+        int32_t layer;
+    };
 
+protected:
+    // --- Segments ------------------------------------------------------------
+    void startFrame(uint64_t frame_number);
+    bool decodeSegment(std::span<const uint8_t> datagram, uint32_t num_points);
+    void addLowResolutionPoints(uint32_t first_point, uint32_t num_points);
+    void coverSegmentBeams(size_t first_run, uint32_t first_point);
+    void finishOpenFrame();
+
+    // --- Frames --------------------------------------------------------------
+    bool runsFitFrame(
+        const FrameState& state,
+        const FrameAssembler::Frame& frame) const;
+    void annotate(
+        const FrameState& state,
+        FrameAssembler::Frame& frame,
+        const PointLayout& layout,
+        Result& result) const;
+    void drop(
+        const FrameState& state,
+        FrameAssembler::Frame& frame,
+        const PointLayout& layout,
+        Result& result) const;
+
+protected:
     artifact_filter::Filter filter;
-    Config cfg;
-    double thr;
-    compact::ScanDecoder decoder;
-    int32_t o_int, o_az, o_el, o_layer;
-    uint32_t step;
-    std::vector<uint8_t> buffer;
+    Config filter_config;
+    double flag_threshold;
 
-    bool open = false;
-    FrameState current;   // being fed
-    FrameState finished;  // finished, waiting for the assembler's frame
-};
+    compact::ScanDecoder segment_decoder;
+    FieldOffsets field_offsets;
+    uint32_t point_step;
+    std::vector<uint8_t> segment_points;
 
-
-class GhostFilterWorker
-{
-public:
-    struct Stats
-    {
-        uint64_t frames_filtered = 0;
-        uint64_t frames_unfiltered = 0;  // published without filtering
-        uint64_t frames_overloaded = 0;  // of those: the worker fell behind
-        uint64_t points_classified = 0;
-        uint64_t points_flagged = 0;
-        /* Since the last takeStats(): frames, and the time from the
-         * assembler emitting a frame to its publication (what the filter
-         * adds to the latency) and the filter's work per frame. */
-        uint64_t window_frames = 0;
-        uint64_t window_delay_sum_ns = 0, window_delay_max_ns = 0;
-        uint64_t window_work_sum_ns = 0, window_work_max_ns = 0;
-    };
-
-    using Publish = std::function<
-        void(FrameAssembler::Frame& frame, const GhostFilter::Result& result)>;
-
-    /* While more than max_backlog frames wait, new segments are skipped and
-     * their frames published unfiltered, so a slow machine can't fall
-     * further and further behind. */
-    GhostFilterWorker(
-        std::unique_ptr<GhostFilter> filter,
-        PointLayout layout,
-        Publish publish,
-        uint32_t max_backlog = 2);
-    ~GhostFilterWorker();
-
-    GhostFilterWorker(const GhostFilterWorker&) = delete;
-    GhostFilterWorker& operator=(const GhostFilterWorker&) = delete;
-
-    /* From the receive thread, in the order the assembler produces them. */
-    void segment(
-        const compact::ScanInfo& info,
-        std::span<const uint8_t> datagram,
-        uint64_t frame_number,
-        uint32_t first_point);
-    void frame(FrameAssembler::Frame&& frame);
-    void reset();
-
-    /* Blocks until everything queued so far has been published. */
-    void drain();
-
-    /* Totals, and the window since the last call (which this resets). */
-    Stats takeStats();
-
-    const GhostFilter& filter() const { return *ghost; }
-
-private:
-    struct Job
-    {
-        enum class Kind
-        {
-            Segment,
-            Frame,
-            Reset
-        } kind = Kind::Segment;
-        std::vector<uint8_t> datagram;
-        uint64_t frame_number = 0;
-        uint32_t first_point = 0, points = 0;
-        FrameAssembler::Frame frame;
-        std::chrono::steady_clock::time_point queued;
-    };
-
-    void run();
-    void push(Job&& job);
-
-    std::unique_ptr<GhostFilter> ghost;
-    PointLayout layout;
-    Publish publish;
-    uint32_t max_backlog;
-
-    std::mutex mtx;
-    std::condition_variable cv, idle_cv;
-    std::deque<Job> jobs;        // guarded by mtx
-    uint32_t queued_frames = 0;  // guarded by mtx
-    bool busy = false;           // guarded by mtx
-    bool stopping = false;       // guarded by mtx
-    Stats stats;                 // guarded by mtx
-    uint64_t work_ns = 0;        // worker thread: work on the open frame
-    std::thread thread;
+    bool frame_open{false};
+    FrameState current_frame;   // being fed
+    FrameState finished_frame;  // finished, waiting for the assembler's frame
 };
 
 }  // namespace multiscan

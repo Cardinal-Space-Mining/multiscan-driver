@@ -48,357 +48,83 @@
 namespace multiscan::sopas
 {
 
-size_t StartReport::problems() const
+namespace
 {
-    size_t n = 0;
-    for (const auto& s : settings)
-    {
-        n += !s.problem.empty();
-    }
-    return n;
+
+bool replyStartsWith(const Result& result, const char* value)
+{
+    return result.ok() && !result.reply.arguments.empty() &&
+           result.reply.arguments[0] == value;
 }
 
-SensorSession::SensorSession(
-    ColaClient& client,
-    std::string password_hash,
-    int timeout) :
-    cola{client},
-    password{std::move(password_hash)},
-    timeout_ms{timeout}
+bool connectionFailed(const Result& result)
 {
+    return result.status == Status::IoError ||
+           result.status == Status::Timeout ||
+           result.status == Status::NotConnected;
 }
 
-Result SensorSession::call(const std::string& telegram)
+/* The stream settings: Compact format, preformatting, and where scan and IMU
+ * data go. Fails if the host isn't an IPv4 address. */
+bool streamItems(
+    const StreamTarget& target,
+    std::vector<SettingItem>& items,
+    std::string& error)
 {
-    return cola.request(telegram, timeout_ms);
-}
-
-bool SensorSession::must(const std::string& telegram, std::string& error)
-{
-    const Result r = call(telegram);
-    if (!r.ok())
-    {
-        error = "'" + telegram + "': " + r.describe();
-        return false;
-    }
-    return true;
-}
-
-bool SensorSession::login(std::string& error)
-{
-    const Result r = call("sMN SetAccessMode 3 " + password);
-    if (!r.ok())
-    {
-        error = "login: " + r.describe();
-        return false;
-    }
-    if (r.reply.args.empty() || r.reply.args[0] != "1")
-    {
-        error = "login rejected: wrong sopas_password?";
-        return false;
-    }
-    return true;
-}
-
-bool SensorSession::run(std::string& error)
-{
-    const Result r = call("sMN Run");
-    if (!r.ok() || r.reply.args.empty() || r.reply.args[0] != "1")
+    in_addr address{};
+    if (::inet_pton(AF_INET, target.host.c_str(), &address) != 1)
     {
         error =
-            "'sMN Run': " + (r.ok() ? std::string("rejected") : r.describe());
+            "stream destination '" + target.host + "' is not an IPv4 address";
         return false;
     }
-    return true;
-}
-
-bool SensorSession::start(
-    const StreamTarget& target,
-    const SensorSettings& settings,
-    bool apply_settings,
-    StartReport& report)
-{
-    report = StartReport{};
-    std::string& err = report.error;
-
-    // --- identity -------------------------------------------------------------
-    auto readString = [this](const char* var) -> std::string
-    {
-        // "sRA DeviceIdent 9 multiScan 8 2.3.0.0R": length-prefixed strings
-        const Result r = call(std::string("sRN ") + var);
-        return (r.ok() && r.reply.args.size() >= 2) ? r.reply.args[1]
-                                                    : std::string();
-    };
-    {
-        const Result r = call("sRN DeviceIdent");
-        if (!r.ok())
-        {
-            err = "'sRN DeviceIdent': " + r.describe();
-            return false;
-        }
-        if (r.reply.args.size() >= 4)
-        {
-            report.device.type = r.reply.args[1];
-            report.device.firmware = r.reply.args[3];
-        }
-        report.device.serial = readString("SerialNumber");
-    }
-
-    // --- stream ---------------------------------------------------------------
-    in_addr addr{};
-    if (::inet_pton(AF_INET, target.host.c_str(), &addr) != 1)
-    {
-        err = "stream destination '" + target.host + "' is not an IPv4 address";
-        return false;
-    }
-    const uint32_t ip = ntohl(addr.s_addr);
-    std::string ip_args;
+    const uint32_t ip = ntohl(address.s_addr);
+    std::string ip_arguments;
+    std::vector<int64_t> ip_bytes;
     for (int shift = 24; shift >= 0; shift -= 8)
     {
-        ip_args += " " + num((ip >> shift) & 0xFF);
+        ip_arguments += " " + signedDecimal((ip >> shift) & 0xFF);
+        ip_bytes.push_back((ip >> shift) & 0xFF);
     }
-    const std::vector<int64_t> ip_exp = {
-        (ip >> 24) & 0xFF,
-        (ip >> 16) & 0xFF,
-        (ip >> 8) & 0xFF,
-        ip & 0xFF};
+    const auto destination = [&](uint16_t port)
+    {
+        std::vector<int64_t> expected = {1};
+        expected.insert(expected.end(), ip_bytes.begin(), ip_bytes.end());
+        expected.push_back(port);
+        return expected;
+    };
 
-    std::vector<SettingItem> stream_items = {
+    items = {
         {       "ScanDataFormat","sWN ScanDataFormat 2","sRN ScanDataFormat",{2}                                   },
         {"ScanDataPreformatting",
          "sWN ScanDataPreformatting 1", "sRN ScanDataPreformatting",
-         {1}                           },
+         {1}                                                     },
         {  "ScanDataEthSettings",
-         "sWN ScanDataEthSettings 1" + ip_args + " " + num(target.scan_port),
-         "sRN ScanDataEthSettings",  {}},
+         "sWN ScanDataEthSettings 1" + ip_arguments + " " +
+         signedDecimal(target.scan_port),
+         "sRN ScanDataEthSettings", destination(target.scan_port)},
         {   "ImuDataEthSettings",
-         "sWN ImuDataEthSettings 1" + ip_args + " " + num(target.imu_port),
-         "sRN ImuDataEthSettings",  {} },
+         "sWN ImuDataEthSettings 1" + ip_arguments + " " +
+         signedDecimal(target.imu_port),
+         "sRN ImuDataEthSettings",  destination(target.imu_port) },
     };
-    for (int i : {2, 3})
-    {
-        auto& e = stream_items[i].expected;
-        e = {1};
-        e.insert(e.end(), ip_exp.begin(), ip_exp.end());
-        e.push_back(i == 2 ? target.scan_port : target.imu_port);
-    }
-
-    if (!login(err))
-    {
-        return false;
-    }
-    for (const auto& it : stream_items)
-    {
-        if (!must(it.write, err))
-        {
-            return false;
-        }
-    }
-
-    // --- settings ---------------------------------------------------------------
-    const std::vector<SettingItem> items = settingItems(settings);
-    for (const auto& it : items)
-    {
-        SettingStatus st;
-        st.name = it.name;
-        if (apply_settings)
-        {
-            const Result r = call(it.write);
-            if (!r.ok())
-            {
-                st.problem = "not applied: " + r.describe();
-                if (r.status == Status::IoError || r.status == Status::Timeout)
-                {
-                    err = "'" + it.write + "': " + r.describe();
-                    return false;
-                }
-            }
-            else if (
-                it.read.empty() &&
-                (r.reply.args.empty() || r.reply.args[0] != "0"))
-            {
-                st.problem = "rejected (status " +
-                             (r.reply.args.empty() ? std::string("?")
-                                                   : r.reply.args[0]) +
-                             ")";
-            }
-            else
-            {
-                st.written = true;
-                st.verified =
-                    it.read
-                        .empty();  // methods can only be checked by their reply
-            }
-        }
-        // with apply_settings off a method (interlace) stays unverified: it has no read-back
-        report.settings.push_back(st);
-    }
-
-    if (!run(err))
-    {
-        return false;
-    }
-    if (!login(err))
-    {
-        return false;
-    }
-
-    // --- read back --------------------------------------------------------------
-    auto verify = [this](const SettingItem& it, SettingStatus& st) -> bool
-    {
-        const Result r = call(it.read);
-        if (r.status == Status::IoError || r.status == Status::Timeout)
-        {
-            return false;
-        }
-        if (!r.ok())
-        {
-            st.problem = "read-back failed: " + r.describe();
-            return true;
-        }
-        const std::string diff = compareReadback(r.reply.args, it.expected);
-        st.verified = diff.empty();
-        if (!diff.empty() && st.problem.empty())
-        {
-            st.problem = (st.written ? "read-back differs: "
-                                     : "sensor differs from configuration: ") +
-                         diff;
-        }
-        return true;
-    };
-    for (const auto& it : stream_items)
-    {
-        SettingStatus st;
-        st.name = it.name;
-        st.written = true;
-        if (!verify(it, st))
-        {
-            err = "read-back of " + it.name + ": connection lost";
-            return false;
-        }
-        if (!st.verified)
-        {
-            err = it.name + " " +
-                  st.problem;  // without these the stream can't work
-            return false;
-        }
-    }
-    for (size_t i = 0; i < items.size(); i++)
-    {
-        if (items[i].read.empty())
-        {
-            continue;
-        }
-        if (!verify(items[i], report.settings[i]))
-        {
-            err = "read-back of " + items[i].name + ": connection lost";
-            return false;
-        }
-    }
-
-    // --- start --------------------------------------------------------------------
-    if (!must("sWN ScanDataEnable 1", err))
-    {
-        return false;
-    }
-    if (!must(
-            std::string("sWN ImuDataEnable ") +
-                (target.imu_enabled ? "1" : "0"),
-            err))
-    {
-        return false;
-    }
-    if (!run(err))
-    {
-        return false;
-    }
-    if (!login(err))
-    {
-        return false;
-    }
-    const Result r = call("sMN LMCstartmeas");
-    if (!r.ok() || r.reply.args.empty() || r.reply.args[0] != "0")
-    {
-        err = "'sMN LMCstartmeas': " +
-              (r.ok() ? std::string("not allowed") : r.describe());
-        return false;
-    }
-    return run(err);  // log out
+    return true;
 }
 
-bool SensorSession::readStatus(SensorStatus& status, std::string& error)
+}  // namespace
+
+
+
+// --- Reports and names -------------------------------------------------------
+
+size_t StartReport::problems() const
 {
-    status = SensorStatus{};
-    auto read = [&](const char* var, Result& r) -> bool
+    size_t count = 0;
+    for (const SettingStatus& setting : this->settings)
     {
-        r = call(std::string("sRN ") + var);
-        if (r.status == Status::IoError || r.status == Status::Timeout ||
-            r.status == Status::NotConnected)
-        {
-            error = std::string("'sRN ") + var + "': " + r.describe();
-            return false;
-        }
-        return true;
-    };
-    auto usable = [](const Result& r, size_t min_args)
-    { return r.ok() && r.reply.args.size() >= min_args; };
-
-    Result r;
-    if (!read("DevSta", r))
-    {
-        return false;
+        count += !setting.problem.empty();
     }
-    if (usable(r, 1))
-    {
-        if (const auto v = parseNumber(r.reply.args[0]))
-        {
-            status.have_state = true;
-            status.state = static_cast<int>(*v);
-        }
-    }
-
-    if (!read("OPcurtmpdev", r))
-    {
-        return false;
-    }
-    if (usable(r, 1))
-    {
-        // IEEE 754 single precision printed as hex
-        if (const auto v = parseNumber(r.reply.args[0]))
-        {
-            const uint32_t bits = static_cast<uint32_t>(*v);
-            float t;
-            std::memcpy(&t, &bits, sizeof(t));
-            status.have_temperature = std::isfinite(t);
-            status.temperature_c = t;
-        }
-    }
-
-    if (!read("ContaminationResult", r))
-    {
-        return false;
-    }
-    if (usable(r, 2))
-    {
-        status.have_contamination = true;
-        status.contamination_warning = r.reply.args[0] != "0";
-        status.contamination_error = r.reply.args[1] != "0";
-    }
-
-    if (!read("ContaminationData", r))
-    {
-        return false;
-    }
-    if (usable(r, 1))
-    {
-        status.have_sectors = true;
-        for (const auto& a : r.reply.args)
-        {
-            status.sectors.push_back(
-                static_cast<int>(parseNumber(a).value_or(-1)));
-        }
-    }
-    return true;
+    return count;
 }
 
 const char* deviceStateName(int state)
@@ -426,10 +152,370 @@ const char* sectorName(int sector)
     return (sector >= 0 && sector <= 3) ? NAMES[sector] : "unknown";
 }
 
+
+
+// --- SensorSession -----------------------------------------------------------
+
+SensorSession::SensorSession(
+    ColaClient& client,
+    std::string password_hash,
+    int timeout_ms) :
+    client{client},
+    password_hash{std::move(password_hash)},
+    timeout_ms{timeout_ms}
+{
+}
+
+bool SensorSession::start(
+    const StreamTarget& target,
+    const SensorSettings& settings,
+    bool apply_settings,
+    StartReport& report)
+{
+    report = StartReport{};
+    std::string& error = report.error;
+
+    // 1. identity
+    if (!this->readIdentity(report.device, error))
+    {
+        return false;
+    }
+
+    // 2.-4. log in, set the stream, apply the settings
+    std::vector<SettingItem> stream_items;
+    if (!streamItems(target, stream_items, error) || !this->login(error))
+    {
+        return false;
+    }
+    for (const SettingItem& item : stream_items)
+    {
+        if (!this->callOrFail(item.write_telegram, error))
+        {
+            return false;
+        }
+    }
+    const std::vector<SettingItem> items = settingItems(settings);
+    if (!this->applySettings(items, apply_settings, report))
+    {
+        return false;
+    }
+
+    // 5.-6. activate, log in again and read everything back
+    if (!this->run(error) || !this->login(error) ||
+        !this->verifyStream(stream_items, error) ||
+        !this->verifySettings(items, report))
+    {
+        return false;
+    }
+
+    // 7.-8. start the output and log out
+    return this->startOutput(target, error);
+}
+
 bool SensorSession::stop(std::string& error)
 {
-    return login(error) && must("sWN ScanDataEnable 0", error) &&
-           must("sWN ImuDataEnable 0", error) && run(error);
+    return this->login(error) &&
+           this->callOrFail("sWN ScanDataEnable 0", error) &&
+           this->callOrFail("sWN ImuDataEnable 0", error) && this->run(error);
+}
+
+bool SensorSession::readStatus(SensorStatus& status, std::string& error)
+{
+    status = SensorStatus{};
+    const auto usable = [](const Result& result, size_t min_arguments)
+    { return result.ok() && result.reply.arguments.size() >= min_arguments; };
+    Result result;
+
+    // --- Device state ---
+    if (!this->readVariable("DevSta", result, error))
+    {
+        return false;
+    }
+    if (usable(result, 1))
+    {
+        if (const auto value = parseNumber(result.reply.arguments[0]))
+        {
+            status.has_state = true;
+            status.state = static_cast<int>(*value);
+        }
+    }
+
+    // --- Temperature: IEEE 754 single precision printed as hex ---
+    if (!this->readVariable("OPcurtmpdev", result, error))
+    {
+        return false;
+    }
+    if (usable(result, 1))
+    {
+        if (const auto value = parseNumber(result.reply.arguments[0]))
+        {
+            const uint32_t bits = static_cast<uint32_t>(*value);
+            float temperature;
+            std::memcpy(&temperature, &bits, sizeof(temperature));
+            status.has_temperature = std::isfinite(temperature);
+            status.temperature_c = temperature;
+        }
+    }
+
+    // --- Contamination ---
+    if (!this->readVariable("ContaminationResult", result, error))
+    {
+        return false;
+    }
+    if (usable(result, 2))
+    {
+        status.has_contamination = true;
+        status.contamination_warning = result.reply.arguments[0] != "0";
+        status.contamination_error = result.reply.arguments[1] != "0";
+    }
+
+    if (!this->readVariable("ContaminationData", result, error))
+    {
+        return false;
+    }
+    if (usable(result, 1))
+    {
+        status.has_sectors = true;
+        for (const std::string& sector : result.reply.arguments)
+        {
+            status.sectors.push_back(
+                static_cast<int>(parseNumber(sector).value_or(-1)));
+        }
+    }
+    return true;
+}
+
+
+
+// --- Telegrams ---------------------------------------------------------------
+
+Result SensorSession::call(const std::string& telegram)
+{
+    return this->client.request(telegram, this->timeout_ms);
+}
+
+bool SensorSession::callOrFail(const std::string& telegram, std::string& error)
+{
+    const Result result = this->call(telegram);
+    if (!result.ok())
+    {
+        error = "'" + telegram + "': " + result.describe();
+        return false;
+    }
+    return true;
+}
+
+bool SensorSession::login(std::string& error)
+{
+    const Result result =
+        this->call("sMN SetAccessMode 3 " + this->password_hash);
+    if (!result.ok())
+    {
+        error = "login: " + result.describe();
+        return false;
+    }
+    if (!replyStartsWith(result, "1"))
+    {
+        error = "login rejected: wrong sopas_password?";
+        return false;
+    }
+    return true;
+}
+
+bool SensorSession::run(std::string& error)
+{
+    const Result result = this->call("sMN Run");
+    if (!replyStartsWith(result, "1"))
+    {
+        error = "'sMN Run': " +
+                (result.ok() ? std::string("rejected") : result.describe());
+        return false;
+    }
+    return true;
+}
+
+bool SensorSession::readVariable(
+    const char* variable,
+    Result& result,
+    std::string& error)
+{
+    result = this->call(std::string("sRN ") + variable);
+    if (connectionFailed(result))
+    {
+        error = std::string("'sRN ") + variable + "': " + result.describe();
+        return false;
+    }
+    return true;
+}
+
+
+
+// --- Steps of start() --------------------------------------------------------
+
+/* Device identity; no login needed. */
+bool SensorSession::readIdentity(DeviceInfo& device, std::string& error)
+{
+    const Result identity = this->call("sRN DeviceIdent");
+    if (!identity.ok())
+    {
+        error = "'sRN DeviceIdent': " + identity.describe();
+        return false;
+    }
+    // "sRA DeviceIdent 9 multiScan 8 2.3.0.0R": length-prefixed strings
+    if (identity.reply.arguments.size() >= 4)
+    {
+        device.type = identity.reply.arguments[1];
+        device.firmware = identity.reply.arguments[3];
+    }
+    const Result serial = this->call("sRN SerialNumber");
+    device.serial = (serial.ok() && serial.reply.arguments.size() >= 2)
+                        ? serial.reply.arguments[1]
+                        : std::string();
+    return true;
+}
+
+/* Writes every setting (unless apply_settings is off) and records how it
+ * went. Fails only if the connection is lost. */
+bool SensorSession::applySettings(
+    const std::vector<SettingItem>& items,
+    bool apply_settings,
+    StartReport& report)
+{
+    for (const SettingItem& item : items)
+    {
+        SettingStatus status;
+        status.name = item.name;
+        // With apply_settings off a method (interlace) stays unverified: it
+        // has no read-back.
+        if (apply_settings)
+        {
+            const bool is_method = item.read_telegram.empty();
+            const Result result = this->call(item.write_telegram);
+            if (!result.ok())
+            {
+                status.problem = "not applied: " + result.describe();
+                if (result.status == Status::IoError ||
+                    result.status == Status::Timeout)
+                {
+                    report.error =
+                        "'" + item.write_telegram + "': " + result.describe();
+                    return false;
+                }
+            }
+            else if (is_method && !replyStartsWith(result, "0"))
+            {
+                status.problem = "rejected (status " +
+                                 (result.reply.arguments.empty()
+                                      ? std::string("?")
+                                      : result.reply.arguments[0]) +
+                                 ")";
+            }
+            else
+            {
+                status.written = true;
+                // methods can only be checked by their reply
+                status.verified = is_method;
+            }
+        }
+        report.settings.push_back(status);
+    }
+    return true;
+}
+
+bool SensorSession::verifySetting(
+    const SettingItem& item,
+    SettingStatus& status)
+{
+    const Result result = this->call(item.read_telegram);
+    if (result.status == Status::IoError || result.status == Status::Timeout)
+    {
+        return false;
+    }
+    if (!result.ok())
+    {
+        status.problem = "read-back failed: " + result.describe();
+        return true;
+    }
+    const std::string difference =
+        compareReadback(result.reply.arguments, item.expected_values);
+    status.verified = difference.empty();
+    if (!difference.empty() && status.problem.empty())
+    {
+        status.problem =
+            (status.written ? "read-back differs: "
+                            : "sensor differs from configuration: ") +
+            difference;
+    }
+    return true;
+}
+
+/* Without the stream settings the stream can't work: any difference is
+ * fatal. */
+bool SensorSession::verifyStream(
+    const std::vector<SettingItem>& stream_items,
+    std::string& error)
+{
+    for (const SettingItem& item : stream_items)
+    {
+        SettingStatus status;
+        status.name = item.name;
+        status.written = true;
+        if (!this->verifySetting(item, status))
+        {
+            error = "read-back of " + item.name + ": connection lost";
+            return false;
+        }
+        if (!status.verified)
+        {
+            error = item.name + " " + status.problem;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool SensorSession::verifySettings(
+    const std::vector<SettingItem>& items,
+    StartReport& report)
+{
+    for (size_t i = 0; i < items.size(); i++)
+    {
+        if (items[i].read_telegram.empty())
+        {
+            continue;
+        }
+        if (!this->verifySetting(items[i], report.settings[i]))
+        {
+            report.error =
+                "read-back of " + items[i].name + ": connection lost";
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Enables scan (and IMU) output, activates it, starts the measurement and
+ * logs out: the stream keeps running, and DevSta reads "service mode" while
+ * a client is logged in. */
+bool SensorSession::startOutput(const StreamTarget& target, std::string& error)
+{
+    if (!this->callOrFail("sWN ScanDataEnable 1", error) ||
+        !this->callOrFail(
+            std::string("sWN ImuDataEnable ") +
+                (target.imu_enabled ? "1" : "0"),
+            error) ||
+        !this->run(error) || !this->login(error))
+    {
+        return false;
+    }
+    const Result result = this->call("sMN LMCstartmeas");
+    if (!replyStartsWith(result, "0"))
+    {
+        error = "'sMN LMCstartmeas': " +
+                (result.ok() ? std::string("not allowed") : result.describe());
+        return false;
+    }
+    return this->run(error);  // log out
 }
 
 }  // namespace multiscan::sopas

@@ -69,9 +69,9 @@ namespace multiscan::sopas
 struct StreamTarget
 {
     std::string host;  // IPv4 the sensor sends to
-    uint16_t scan_port = 2115;
-    uint16_t imu_port = 2116;
-    bool imu_enabled = true;
+    uint16_t scan_port{2115};
+    uint16_t imu_port{2116};
+    bool imu_enabled{true};
 };
 
 struct DeviceInfo
@@ -84,16 +84,18 @@ struct DeviceInfo
 struct SettingStatus
 {
     std::string name;
-    bool written =
-        false;  // write accepted (always false with apply_settings off)
-    bool verified =
-        false;  // read-back equals the configuration (methods: reply ok)
+    /* The write was accepted (always false with apply_settings off). */
+    bool written{false};
+    /* The read-back equals the configuration (methods: their reply was
+     * ok). */
+    bool verified{false};
     std::string problem;  // why it isn't written/verified
 };
 
 /* Polled while streaming (no login needed). */
 struct SensorStatus
 {
+public:
     enum class DeviceState : int
     {
         Reserved = 0,
@@ -106,6 +108,7 @@ struct SensorStatus
         RecoverableError = 7,
         FatalError = 8,
     };
+
     enum class Sector : int
     {
         Deactivated = 0,
@@ -114,14 +117,15 @@ struct SensorStatus
         Error = 3,
     };
 
-    bool have_state = false;
-    int state = 0;  // DeviceState, or the raw value if outside it
-    bool have_temperature = false;
-    float temperature_c = 0.f;  // internal, not ambient
-    bool have_contamination = false;
-    bool contamination_warning = false;
-    bool contamination_error = false;
-    bool have_sectors = false;
+public:
+    bool has_state{false};
+    int state{0};  // DeviceState, or the raw value if outside it
+    bool has_temperature{false};
+    float temperature_c{0.f};  // internal, not ambient
+    bool has_contamination{false};
+    bool contamination_warning{false};
+    bool contamination_error{false};
+    bool has_sectors{false};
     std::vector<int> sectors;  // Sector per 30 deg sector
 };
 
@@ -133,9 +137,11 @@ struct StartReport
     DeviceInfo device;
     std::vector<SettingStatus> settings;
     std::string error;  // fatal: streaming was not started
-    bool ok() const { return error.empty(); }
+
+    bool ok() const { return this->error.empty(); }
     size_t problems() const;
 };
+
 
 class SensorSession
 {
@@ -145,6 +151,7 @@ public:
         std::string password_hash,
         int timeout_ms);
 
+public:
     bool start(
         const StreamTarget& target,
         const SensorSettings& settings,
@@ -157,14 +164,35 @@ public:
      * failed (error says why). */
     bool readStatus(SensorStatus& status, std::string& error);
 
-private:
+protected:
+    // --- Telegrams -----------------------------------------------------------
     Result call(const std::string& telegram);
+    bool callOrFail(const std::string& telegram, std::string& error);
     bool login(std::string& error);
     bool run(std::string& error);
-    bool must(const std::string& telegram, std::string& error);
+    /* Reads a variable for readStatus: false only if the connection
+     * failed. */
+    bool readVariable(const char* variable, Result& result, std::string& error);
 
-    ColaClient& cola;
-    std::string password;
+    // --- Steps of start() ----------------------------------------------------
+    bool readIdentity(DeviceInfo& device, std::string& error);
+    bool applySettings(
+        const std::vector<SettingItem>& items,
+        bool apply_settings,
+        StartReport& report);
+    /* Compares one item's read-back; false only if the connection failed. */
+    bool verifySetting(const SettingItem& item, SettingStatus& status);
+    bool verifyStream(
+        const std::vector<SettingItem>& stream_items,
+        std::string& error);
+    bool verifySettings(
+        const std::vector<SettingItem>& items,
+        StartReport& report);
+    bool startOutput(const StreamTarget& target, std::string& error);
+
+protected:
+    ColaClient& client;
+    std::string password_hash;
     int timeout_ms;
 };
 

@@ -1,4 +1,0 @@
-# Copy of ghost-ml-ws src/ghost_tester/include/artifact_filter/artifact_filter.hpp:
-# keep it byte-identical, do not reformat.
-DisableFormat: true
-SortIncludes: Never

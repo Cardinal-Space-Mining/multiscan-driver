@@ -61,6 +61,7 @@ namespace multiscan::sopas
 
 namespace
 {
+
 constexpr char STX = 0x02;
 constexpr char ETX = 0x03;
 constexpr size_t MAX_TELEGRAM_BYTES = 1 << 20;
@@ -93,11 +94,18 @@ const char* replyTypeFor(const std::string& request_type)
     return nullptr;
 }
 
-bool isEvent(const Telegram& t)
+bool isEvent(const Telegram& telegram)
 {
     // sSN: event data; sEA without a pending sEN is a registration echo
-    return t.type == "sSN";
+    return telegram.type == "sSN";
 }
+
+bool isAnyReply(const Telegram& telegram)
+{
+    return telegram.type == "sRA" || telegram.type == "sWA" ||
+           telegram.type == "sAN" || telegram.type == "sEA";
+}
+
 }  // namespace
 
 
@@ -139,7 +147,7 @@ const char* sopasErrorName(int code)
 
 std::string Result::describe() const
 {
-    switch (status)
+    switch (this->status)
     {
         case Status::Ok:
             return "ok";
@@ -156,91 +164,96 @@ std::string Result::describe() const
                 code,
                 sizeof(code),
                 "%X",
-                static_cast<unsigned>(sopas_error));
+                static_cast<unsigned>(this->sopas_error));
             return std::string("sFA ") + code + ": " +
-                   sopasErrorName(sopas_error);
+                   sopasErrorName(this->sopas_error);
         }
         case Status::BadReply:
-            return "unexpected reply '" + reply.raw + "'";
+            return "unexpected reply '" + this->reply.raw + "'";
     }
     return "?";
 }
 
-std::optional<int64_t> parseNumber(const std::string& t)
+std::optional<int64_t> parseNumber(const std::string& token)
 {
-    if (t.empty())
+    if (token.empty())
     {
         return std::nullopt;
     }
     errno = 0;
     char* end = nullptr;
-    int64_t v;
-    if (t[0] == '+' || t[0] == '-')
+    int64_t value;
+    if (token[0] == '+' || token[0] == '-')
     {
-        v = std::strtoll(t.c_str(), &end, 10);
+        value = std::strtoll(token.c_str(), &end, 10);
     }
     else
     {
-        v = static_cast<int64_t>(std::strtoull(t.c_str(), &end, 16));
+        value = static_cast<int64_t>(std::strtoull(token.c_str(), &end, 16));
     }
-    if (errno != 0 || end == t.c_str() || *end != '\0')
+    if (errno != 0 || end == token.c_str() || *end != '\0')
     {
         return std::nullopt;
     }
-    return v;
+    return value;
 }
 
 Telegram parseTelegram(const std::string& text)
 {
-    Telegram t;
-    t.raw = text;
-    std::vector<std::string> tok;
-    size_t i = 0;
-    while (i < text.size())
+    Telegram telegram;
+    telegram.raw = text;
+    std::vector<std::string> tokens;
+    size_t position = 0;
+    while (position < text.size())
     {
-        while (i < text.size() && text[i] == ' ')
+        while (position < text.size() && text[position] == ' ')
         {
-            i++;
+            position++;
         }
-        size_t j = i;
-        while (j < text.size() && text[j] != ' ')
+        size_t token_end = position;
+        while (token_end < text.size() && text[token_end] != ' ')
         {
-            j++;
+            token_end++;
         }
-        if (j > i)
+        if (token_end > position)
         {
-            tok.push_back(text.substr(i, j - i));
+            tokens.push_back(text.substr(position, token_end - position));
         }
-        i = j;
+        position = token_end;
     }
-    if (!tok.empty())
+    if (!tokens.empty())
     {
-        t.type = tok[0];
+        telegram.type = tokens[0];
     }
-    size_t first_arg = 1;
-    if (tok.size() > 1 && t.type != "sFA")
+    size_t first_argument = 1;
+    if (tokens.size() > 1 && telegram.type != "sFA")
     {
-        t.name = tok[1];
-        first_arg = 2;
+        telegram.name = tokens[1];
+        first_argument = 2;
     }
-    if (tok.size() > first_arg)
+    if (tokens.size() > first_argument)
     {
-        t.args.assign(tok.begin() + static_cast<long>(first_arg), tok.end());
+        telegram.arguments.assign(
+            tokens.begin() + static_cast<long>(first_argument),
+            tokens.end());
     }
-    return t;
+    return telegram;
 }
 
 
-ColaClient::~ColaClient() { disconnect(); }
+
+// --- Connection --------------------------------------------------------------
+
+ColaClient::~ColaClient() { this->disconnect(); }
 
 void ColaClient::disconnect()
 {
-    if (fd >= 0)
+    if (this->socket_fd >= 0)
     {
-        ::close(fd);
-        fd = -1;
+        ::close(this->socket_fd);
+        this->socket_fd = -1;
     }
-    rx.clear();
+    this->receive_buffer.clear();
 }
 
 bool ColaClient::connect(
@@ -249,120 +262,296 @@ bool ColaClient::connect(
     int timeout_ms,
     std::string& error)
 {
-    disconnect();
+    this->disconnect();
+    const std::string endpoint = host + ":" + std::to_string(port);
+
     addrinfo hints{};
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    addrinfo* res = nullptr;
-    if (int rc = ::getaddrinfo(
+    addrinfo* address = nullptr;
+    if (const int status = ::getaddrinfo(
             host.c_str(),
             std::to_string(port).c_str(),
             &hints,
-            &res);
-        rc != 0 || !res)
+            &address);
+        status != 0 || !address)
     {
-        error = "cannot resolve '" + host + "': " + gai_strerror(rc);
+        error = "cannot resolve '" + host + "': " + gai_strerror(status);
         return false;
     }
-    fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (fd < 0)
+    this->socket_fd =
+        ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (this->socket_fd < 0)
     {
-        ::freeaddrinfo(res);
+        ::freeaddrinfo(address);
         error = std::string("socket: ") + std::strerror(errno);
         return false;
     }
-    int rc = ::connect(fd, res->ai_addr, res->ai_addrlen);
-    ::freeaddrinfo(res);
-    if (rc < 0 && errno == EINPROGRESS)
+    int status =
+        ::connect(this->socket_fd, address->ai_addr, address->ai_addrlen);
+    ::freeaddrinfo(address);
+
+    // non-blocking: wait for the connection to complete
+    if (status < 0 && errno == EINPROGRESS)
     {
-        pollfd p{fd, POLLOUT, 0};
-        rc = ::poll(&p, 1, timeout_ms);
-        if (rc == 0)
+        pollfd writable{this->socket_fd, POLLOUT, 0};
+        if (::poll(&writable, 1, timeout_ms) == 0)
         {
-            error = "connect to " + host + ":" + std::to_string(port) +
-                    " timed out";
-            disconnect();
+            error = "connect to " + endpoint + " timed out";
+            this->disconnect();
             return false;
         }
-        int so_error = 0;
-        socklen_t len = sizeof(so_error);
-        ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len);
-        rc = so_error ? -1 : 0;
-        errno = so_error;
+        int socket_error = 0;
+        socklen_t socket_error_size = sizeof(socket_error);
+        ::getsockopt(
+            this->socket_fd,
+            SOL_SOCKET,
+            SO_ERROR,
+            &socket_error,
+            &socket_error_size);
+        status = socket_error ? -1 : 0;
+        errno = socket_error;
     }
-    if (rc < 0)
+    if (status < 0)
     {
-        error = "connect to " + host + ":" + std::to_string(port) + ": " +
-                std::strerror(errno);
-        disconnect();
+        error = "connect to " + endpoint + ": " + std::strerror(errno);
+        this->disconnect();
         return false;
     }
-    int on = 1;
-    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+    const int enable = 1;
+    ::setsockopt(
+        this->socket_fd,
+        IPPROTO_TCP,
+        TCP_NODELAY,
+        &enable,
+        sizeof(enable));
     return true;
 }
 
 std::string ColaClient::localAddress() const
 {
-    if (fd < 0)
+    if (this->socket_fd < 0)
     {
         return "";
     }
-    sockaddr_in a{};
-    socklen_t len = sizeof(a);
-    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len) < 0)
+    sockaddr_in address{};
+    socklen_t address_size = sizeof(address);
+    if (::getsockname(
+            this->socket_fd,
+            reinterpret_cast<sockaddr*>(&address),
+            &address_size) < 0)
     {
         return "";
     }
-    char buf[INET_ADDRSTRLEN];
-    return ::inet_ntop(AF_INET, &a.sin_addr, buf, sizeof(buf))
-               ? std::string(buf)
+    char text[INET_ADDRSTRLEN];
+    return ::inet_ntop(AF_INET, &address.sin_addr, text, sizeof(text))
+               ? std::string(text)
                : std::string();
 }
 
+
+
+// --- Requests and events -----------------------------------------------------
+
+Result ColaClient::request(const std::string& telegram, int timeout_ms)
+{
+    Result result;
+    if (this->socket_fd < 0)
+    {
+        return result;
+    }
+    const int64_t deadline_ms = nowMs() + timeout_ms;
+    result.status = this->sendFrame(telegram, deadline_ms);
+    if (result.status != Status::Ok)
+    {
+        return result;
+    }
+    return this->awaitReply(parseTelegram(telegram), deadline_ms);
+}
+
+bool ColaClient::poll(int timeout_ms)
+{
+    if (this->socket_fd < 0)
+    {
+        return false;
+    }
+    const int64_t deadline_ms = nowMs() + timeout_ms;
+    std::string text;
+    while (true)
+    {
+        switch (this->readTelegram(text, deadline_ms))
+        {
+            case ReadResult::Timeout:
+                return true;
+            case ReadResult::Closed:
+                this->disconnect();
+                return false;
+            case ReadResult::Telegram:
+                break;
+        }
+        const Telegram event = parseTelegram(text);
+        if (this->event_handler)
+        {
+            this->event_handler(event);
+        }
+    }
+}
+
+/* Sends <STX>telegram<ETX>. */
+Status ColaClient::sendFrame(const std::string& telegram, int64_t deadline_ms)
+{
+    const std::string frame =
+        std::string(1, STX) + telegram + std::string(1, ETX);
+    size_t sent = 0;
+    while (sent < frame.size())
+    {
+        const ssize_t written = ::send(
+            this->socket_fd,
+            frame.data() + sent,
+            frame.size() - sent,
+            MSG_NOSIGNAL);
+        if (written >= 0)
+        {
+            sent += static_cast<size_t>(written);
+            continue;
+        }
+        if (errno != EAGAIN && errno != EINTR)
+        {
+            this->disconnect();
+            return Status::IoError;
+        }
+        pollfd writable{this->socket_fd, POLLOUT, 0};
+        const int64_t remaining_ms =
+            std::max<int64_t>(0, deadline_ms - nowMs());
+        if (::poll(&writable, 1, static_cast<int>(remaining_ms)) <= 0)
+        {
+            return Status::Timeout;
+        }
+    }
+    return Status::Ok;
+}
+
+/* Reads until the reply to `request` arrives; events on the way go to the
+ * event handler, stale replies to earlier requests are skipped. */
+Result ColaClient::awaitReply(const Telegram& request, int64_t deadline_ms)
+{
+    Result result;
+    const char* expected_type = replyTypeFor(request.type);
+    std::string text;
+    while (true)
+    {
+        switch (this->readTelegram(text, deadline_ms))
+        {
+            case ReadResult::Timeout:
+                result.status = Status::Timeout;
+                return result;
+            case ReadResult::Closed:
+                this->disconnect();
+                result.status = Status::IoError;
+                return result;
+            case ReadResult::Telegram:
+                break;
+        }
+        Telegram reply = parseTelegram(text);
+        if (isEvent(reply))
+        {
+            if (this->event_handler)
+            {
+                this->event_handler(reply);
+            }
+            continue;
+        }
+
+        result.reply = std::move(reply);
+        if (result.reply.type == "sFA")
+        {
+            result.status = Status::SopasError;
+            result.sopas_error =
+                result.reply.arguments.empty()
+                    ? -1
+                    : static_cast<int>(
+                          parseNumber(result.reply.arguments[0]).value_or(-1));
+            return result;
+        }
+        if (expected_type && result.reply.type == expected_type &&
+            result.reply.name == request.name)
+        {
+            result.status = Status::Ok;
+            return result;
+        }
+        if (isAnyReply(result.reply))
+        {
+            continue;  // stale reply to an earlier request that timed out
+        }
+        result.status = Status::BadReply;
+        return result;
+    }
+}
+
+
+
+// --- Framing -----------------------------------------------------------------
+
 ColaClient::ReadResult ColaClient::readTelegram(
-    std::string& out,
+    std::string& text,
     int64_t deadline_ms)
+{
+    while (!this->takeTelegram(text))
+    {
+        const ReadResult received = this->receiveMore(deadline_ms);
+        if (received != ReadResult::Telegram)
+        {
+            return received;
+        }
+    }
+    return ReadResult::Telegram;
+}
+
+/* Skips anything before STX and takes everything up to ETX. */
+bool ColaClient::takeTelegram(std::string& text)
+{
+    std::string& buffer = this->receive_buffer;
+    const size_t start = buffer.find(STX);
+    if (start == std::string::npos)
+    {
+        buffer.clear();
+        return false;
+    }
+    const size_t end = buffer.find(ETX, start + 1);
+    if (end != std::string::npos)
+    {
+        text = buffer.substr(start + 1, end - start - 1);
+        buffer.erase(0, end + 1);
+        return true;
+    }
+    if (start > 0)
+    {
+        buffer.erase(0, start);
+    }
+    if (buffer.size() > MAX_TELEGRAM_BYTES)
+    {
+        buffer.clear();  // garbage without ETX
+    }
+    return false;
+}
+
+/* Waits for more bytes. ReadResult::Telegram here means "got some". */
+ColaClient::ReadResult ColaClient::receiveMore(int64_t deadline_ms)
 {
     while (true)
     {
-        // frame: skip anything before STX, take everything up to ETX
-        const size_t stx = rx.find(STX);
-        if (stx != std::string::npos)
-        {
-            const size_t etx = rx.find(ETX, stx + 1);
-            if (etx != std::string::npos)
-            {
-                out = rx.substr(stx + 1, etx - stx - 1);
-                rx.erase(0, etx + 1);
-                return ReadResult::Telegram;
-            }
-            if (stx > 0)
-            {
-                rx.erase(0, stx);
-            }
-        }
-        else
-        {
-            rx.clear();
-        }
-        if (rx.size() > MAX_TELEGRAM_BYTES)
-        {
-            rx.clear();  // garbage without ETX
-        }
-
-        const int64_t left = deadline_ms - nowMs();
-        if (left <= 0)
+        const int64_t remaining_ms = deadline_ms - nowMs();
+        if (remaining_ms <= 0)
         {
             return ReadResult::Timeout;
         }
-        pollfd p{fd, POLLIN, 0};
-        const int rc = ::poll(&p, 1, static_cast<int>(left));
-        if (rc == 0)
+        pollfd readable{this->socket_fd, POLLIN, 0};
+        const int ready = ::poll(&readable, 1, static_cast<int>(remaining_ms));
+        if (ready == 0)
         {
             return ReadResult::Timeout;
         }
-        if (rc < 0)
+        if (ready < 0)
         {
             if (errno == EINTR)
             {
@@ -370,13 +559,14 @@ ColaClient::ReadResult ColaClient::readTelegram(
             }
             return ReadResult::Closed;
         }
-        char buf[4096];
-        const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
-        if (n == 0)
+        char chunk[4096];
+        const ssize_t received =
+            ::recv(this->socket_fd, chunk, sizeof(chunk), 0);
+        if (received == 0)
         {
             return ReadResult::Closed;
         }
-        if (n < 0)
+        if (received < 0)
         {
             if (errno == EAGAIN || errno == EINTR)
             {
@@ -384,126 +574,8 @@ ColaClient::ReadResult ColaClient::readTelegram(
             }
             return ReadResult::Closed;
         }
-        rx.append(buf, static_cast<size_t>(n));
-    }
-}
-
-Result ColaClient::request(const std::string& telegram, int timeout_ms)
-{
-    Result r;
-    if (fd < 0)
-    {
-        return r;
-    }
-
-    const std::string frame =
-        std::string(1, STX) + telegram + std::string(1, ETX);
-    size_t sent = 0;
-    const int64_t deadline = nowMs() + timeout_ms;
-    while (sent < frame.size())
-    {
-        const ssize_t n =
-            ::send(fd, frame.data() + sent, frame.size() - sent, MSG_NOSIGNAL);
-        if (n < 0)
-        {
-            if (errno == EAGAIN || errno == EINTR)
-            {
-                pollfd p{fd, POLLOUT, 0};
-                if (::poll(
-                        &p,
-                        1,
-                        static_cast<int>(
-                            std::max<int64_t>(0, deadline - nowMs()))) <= 0)
-                {
-                    r.status = Status::Timeout;
-                    return r;
-                }
-                continue;
-            }
-            disconnect();
-            r.status = Status::IoError;
-            return r;
-        }
-        sent += static_cast<size_t>(n);
-    }
-
-    const Telegram req = parseTelegram(telegram);
-    const char* want = replyTypeFor(req.type);
-    std::string text;
-    while (true)
-    {
-        switch (readTelegram(text, deadline))
-        {
-            case ReadResult::Timeout:
-                r.status = Status::Timeout;
-                return r;
-            case ReadResult::Closed:
-                disconnect();
-                r.status = Status::IoError;
-                return r;
-            case ReadResult::Telegram:
-                break;
-        }
-        Telegram t = parseTelegram(text);
-        if (isEvent(t))
-        {
-            if (event_handler)
-            {
-                event_handler(t);
-            }
-            continue;
-        }
-        r.reply = std::move(t);
-        if (r.reply.type == "sFA")
-        {
-            r.status = Status::SopasError;
-            r.sopas_error =
-                r.reply.args.empty()
-                    ? -1
-                    : static_cast<int>(
-                          parseNumber(r.reply.args[0]).value_or(-1));
-            return r;
-        }
-        if (want && r.reply.type == want && r.reply.name == req.name)
-        {
-            r.status = Status::Ok;
-            return r;
-        }
-        if (r.reply.type == "sRA" || r.reply.type == "sWA" ||
-            r.reply.type == "sAN" || r.reply.type == "sEA")
-        {
-            continue;  // stale reply to an earlier request that timed out
-        }
-        r.status = Status::BadReply;
-        return r;
-    }
-}
-
-bool ColaClient::poll(int timeout_ms)
-{
-    if (fd < 0)
-    {
-        return false;
-    }
-    const int64_t deadline = nowMs() + timeout_ms;
-    std::string text;
-    while (true)
-    {
-        switch (readTelegram(text, deadline))
-        {
-            case ReadResult::Timeout:
-                return true;
-            case ReadResult::Closed:
-                disconnect();
-                return false;
-            case ReadResult::Telegram:
-                break;
-        }
-        const Telegram t = parseTelegram(text);
-        if (event_handler)
-        {
-            event_handler(t);
-        }
+        this->receive_buffer.append(chunk, static_cast<size_t>(received));
+        return ReadResult::Telegram;
     }
 }
 

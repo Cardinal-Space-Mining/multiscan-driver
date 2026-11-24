@@ -1,3 +1,42 @@
+/*******************************************************************************
+*   Copyright (C) 2024-2026 Cardinal Space Mining Club                         *
+*                                                                              *
+*                                 ;xxxxxxx:                                    *
+*                                ;$$$$$$$$$       ...::..                      *
+*                                $$$$$$$$$$x   .:::::::::::..                  *
+*                             x$$$$$$$$$$$$$$::::::::::::::::.                 *
+*                         :$$$$$&X;      .xX:::::::::::::.::...                *
+*                 .$$Xx++$$$$+  :::.     :;:   .::::::.  ....  :               *
+*                :$$$$$$$$$  ;:      ;xXXXXXXXx  .::.  .::::. .:.              *
+*               :$$$$$$$$: ;      ;xXXXXXXXXXXXXx: ..::::::  .::.              *
+*              ;$$$$$$$$ ::   :;XXXXXXXXXXXXXXXXXX+ .::::.  .:::               *
+*               X$$$$$X : +XXXXXXXXXXXXXXXXXXXXXXXX; .::  .::::.               *
+*                .$$$$ :xXXXXXXXXXXXXXXXXXXXXXXXXXXX.   .:::::.                *
+*                 X$$X XXXXXXXXXXXXXXXXXXXXXXXXXXXXx:  .::::.                  *
+*                 $$$:.XXXXXXXXXXXXXXXXXXXXXXXXXXX  ;; ..:.                    *
+*                 $$& :XXXXXXXXXXXXXXXXXXXXXXXX;  +XX; X$$;                    *
+*                 $$$: XXXXXXXXXXXXXXXXXXXXXX; :XXXXX; X$$;                    *
+*                 X$$X XXXXXXXXXXXXXXXXXXX; .+XXXXXXX; $$$                     *
+*                 $$$$ ;XXXXXXXXXXXXXXX+  +XXXXXXXXx+ X$$$+                    *
+*               x$$$$$X ;XXXXXXXXXXX+ :xXXXXXXXX+   .;$$$$$$                   *
+*              +$$$$$$$$ ;XXXXXXx;;+XXXXXXXXX+    : +$$$$$$$$                  *
+*               +$$$$$$$$: xXXXXXXXXXXXXXX+      ; X$$$$$$$$                   *
+*                :$$$$$$$$$. +XXXXXXXXX;      ;: x$$$$$$$$$                    *
+*                ;x$$$$XX$$$$+ .;+X+      :;: :$$$$$xX$$$X                     *
+*               ;;;;;;;;;;X$$$$$$$+      :X$$$$$$&.                            *
+*               ;;;;;;;:;;;;;x$$$$$$$$$$$$$$$$x.                               *
+*               :;;;;;;;;;;;;.  :$$$$$$$$$$X                                   *
+*                .;;;;;;;;:;;    +$$$$$$$$$                                    *
+*                  .;;;;;;.       X$$$$$$$:                                    *
+*                                                                              *
+*   Unless required by applicable law or agreed to in writing, software        *
+*   distributed under the License is distributed on an "AS IS" BASIS,          *
+*   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   *
+*   See the License for the specific language governing permissions and        *
+*   limitations under the License.                                             *
+*                                                                              *
+*******************************************************************************/
+
 /*  Frame assembly by frame number (src/frame_assembler.cpp).
  *
  *  The first tests cover two defects of the old driver (vendored sick_scan_xd
@@ -76,7 +115,7 @@ struct Harness
             auto p = expectedPoints(sent.at({f.frame_number, s}), 1);
             exp.insert(exp.end(), p.begin(), p.end());
         }
-        ASSERT_EQ(f.points, exp.size()) << "frame " << f.frame_number;
+        ASSERT_EQ(f.num_points, exp.size()) << "frame " << f.frame_number;
         ASSERT_EQ(f.data.size(), exp.size() * 52);
         for (size_t i = 0; i < exp.size(); i++)
         {
@@ -133,7 +172,9 @@ TEST(FrameAssembler, NarrowOutputRangePublishesEveryFrame)
             per_frame.emplace_back();
         }
         per_frame.back().push_back(*t);
-        ASSERT_EQ(a.add(d.data, d.recv_time_ns, frames), compact::Error::None);
+        ASSERT_EQ(
+            a.add(d.data, d.receive_time_ns, frames),
+            compact::Error::None);
     }
     const uint32_t sent = maskOf({0, 1, 5, 6, 7, 11});
     ASSERT_EQ(per_frame.size(), 10u);
@@ -150,7 +191,7 @@ TEST(FrameAssembler, NarrowOutputRangePublishesEveryFrame)
             auto p = expectedPoints(t, 1);
             exp.insert(exp.end(), p.begin(), p.end());
         }
-        ASSERT_EQ(frames[i].points, exp.size());
+        ASSERT_EQ(frames[i].num_points, exp.size());
         for (size_t k = 0; k < exp.size(); k++)
         {
             ASSERT_EQ(
@@ -238,7 +279,11 @@ TEST(FrameAssembler, SegmentHookSeesAcceptedSegmentsBeforeTheirFrame)
                 compact::telegramType(dgram),
                 compact::TelegramType::Scan);
             calls.push_back(
-                {frame, info.segment, first, info.points, h.frames.size()});
+                {frame,
+                 info.segment_index,
+                 first,
+                 info.num_points,
+                 h.frames.size()});
         });
     // joined mid-revolution: that frame is never emitted, nor hooked
     for (uint32_t s = 7; s < 12; s++)
@@ -262,7 +307,7 @@ TEST(FrameAssembler, SegmentHookSeesAcceptedSegmentsBeforeTheirFrame)
         EXPECT_EQ(calls[s].frames_emitted, 0u);  // the last one too
         first += calls[s].points;
     }
-    EXPECT_EQ(h.frames[0].points, first);
+    EXPECT_EQ(h.frames[0].num_points, first);
 }
 
 TEST(FrameAssembler, ClockOffsetMovesStampAndPointTimes)
@@ -300,7 +345,7 @@ TEST(FrameAssembler, ClockOffsetMovesStampAndPointTimes)
         auto p = expectedPoints(h.sent.at({5, s}), 1);
         exp.insert(exp.end(), p.begin(), p.end());
     }
-    ASSERT_EQ(f.points, exp.size());
+    ASSERT_EQ(f.num_points, exp.size());
     for (size_t i = 0; i < exp.size(); i++)
     {
         const auto got = readAllFieldsPoint(f.data.data() + i * 52);
@@ -512,7 +557,7 @@ TEST(FrameAssembler, GrowsBeyondTheInitialSegmentCapacity)
     cfg.initial_segment_points = 100;  // all-layer segments hold 900 points
     Harness h(cfg);
     SyntheticConfig all;
-    all.echoes = 3;
+    all.num_echoes = 3;
     for (uint64_t f = 0; f < 2; f++)
     {
         for (uint32_t s = 0; s < 12; s++)

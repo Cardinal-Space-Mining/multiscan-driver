@@ -1,3 +1,42 @@
+/*******************************************************************************
+*   Copyright (C) 2024-2026 Cardinal Space Mining Club                         *
+*                                                                              *
+*                                 ;xxxxxxx:                                    *
+*                                ;$$$$$$$$$       ...::..                      *
+*                                $$$$$$$$$$x   .:::::::::::..                  *
+*                             x$$$$$$$$$$$$$$::::::::::::::::.                 *
+*                         :$$$$$&X;      .xX:::::::::::::.::...                *
+*                 .$$Xx++$$$$+  :::.     :;:   .::::::.  ....  :               *
+*                :$$$$$$$$$  ;:      ;xXXXXXXXx  .::.  .::::. .:.              *
+*               :$$$$$$$$: ;      ;xXXXXXXXXXXXXx: ..::::::  .::.              *
+*              ;$$$$$$$$ ::   :;XXXXXXXXXXXXXXXXXX+ .::::.  .:::               *
+*               X$$$$$X : +XXXXXXXXXXXXXXXXXXXXXXXX; .::  .::::.               *
+*                .$$$$ :xXXXXXXXXXXXXXXXXXXXXXXXXXXX.   .:::::.                *
+*                 X$$X XXXXXXXXXXXXXXXXXXXXXXXXXXXXx:  .::::.                  *
+*                 $$$:.XXXXXXXXXXXXXXXXXXXXXXXXXXX  ;; ..:.                    *
+*                 $$& :XXXXXXXXXXXXXXXXXXXXXXXX;  +XX; X$$;                    *
+*                 $$$: XXXXXXXXXXXXXXXXXXXXXX; :XXXXX; X$$;                    *
+*                 X$$X XXXXXXXXXXXXXXXXXXX; .+XXXXXXX; $$$                     *
+*                 $$$$ ;XXXXXXXXXXXXXXX+  +XXXXXXXXx+ X$$$+                    *
+*               x$$$$$X ;XXXXXXXXXXX+ :xXXXXXXXX+   .;$$$$$$                   *
+*              +$$$$$$$$ ;XXXXXXx;;+XXXXXXXXX+    : +$$$$$$$$                  *
+*               +$$$$$$$$: xXXXXXXXXXXXXXX+      ; X$$$$$$$$                   *
+*                :$$$$$$$$$. +XXXXXXXXX;      ;: x$$$$$$$$$                    *
+*                ;x$$$$XX$$$$+ .;+X+      :;: :$$$$$xX$$$X                     *
+*               ;;;;;;;;;;X$$$$$$$+      :X$$$$$$&.                            *
+*               ;;;;;;;:;;;;;x$$$$$$$$$$$$$$$$x.                               *
+*               :;;;;;;;;;;;;.  :$$$$$$$$$$X                                   *
+*                .;;;;;;;;:;;    +$$$$$$$$$                                    *
+*                  .;;;;;;.       X$$$$$$$:                                    *
+*                                                                              *
+*   Unless required by applicable law or agreed to in writing, software        *
+*   distributed under the License is distributed on an "AS IS" BASIS,          *
+*   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   *
+*   See the License for the specific language governing permissions and        *
+*   limitations under the License.                                             *
+*                                                                              *
+*******************************************************************************/
+
 /*  CoLa A client, sensor settings and the start/stop sequence
  *  (src/sopas/), against real device replies (the firmware 2.3 transcript)
  *  and the simulated sensor in support/fake_sensor.hpp.
@@ -32,7 +71,7 @@ std::map<std::string, std::vector<std::vector<std::string>>> readbacks()
         if (line.rfind("< sRA ", 0) == 0)
         {
             const Telegram t = parseTelegram(line.substr(2));
-            out[t.name].push_back(t.args);
+            out[t.name].push_back(t.arguments);
         }
     }
     return out;
@@ -122,9 +161,9 @@ TEST(Sopas, ParsesNumbersLikeTheDevicePrintsThem)
         -900000);
     EXPECT_FALSE(parseNumber(""));
     EXPECT_FALSE(parseNumber("12G"));
-    EXPECT_EQ(num(5), "+5");
-    EXPECT_EQ(num(-5), "-5");
-    EXPECT_EQ(num(0), "+0");
+    EXPECT_EQ(signedDecimal(5), "+5");
+    EXPECT_EQ(signedDecimal(-5), "-5");
+    EXPECT_EQ(signedDecimal(0), "+0");
 }
 
 TEST(Sopas, SplitsTelegrams)
@@ -133,11 +172,11 @@ TEST(Sopas, SplitsTelegrams)
     EXPECT_EQ(t.type, "sRA");
     EXPECT_EQ(t.name, "DeviceIdent");
     EXPECT_EQ(
-        t.args,
+        t.arguments,
         (std::vector<std::string>{"9", "multiScan", "8", "2.3.0.0R"}));
     const Telegram e = parseTelegram("sFA A");
     EXPECT_EQ(e.type, "sFA");
-    EXPECT_EQ(e.args, (std::vector<std::string>{"A"}));
+    EXPECT_EQ(e.arguments, (std::vector<std::string>{"A"}));
 }
 
 TEST(SensorSettings, ExpectedReadbacksMatchTheRealDevice)
@@ -145,7 +184,7 @@ TEST(SensorSettings, ExpectedReadbacksMatchTheRealDevice)
     const auto rb = readbacks();
     for (const auto& it : settingItems(transcriptTestValues()))
     {
-        if (it.read.empty())
+        if (it.read_telegram.empty())
         {
             continue;  // interlace: no read-back
         }
@@ -157,10 +196,11 @@ TEST(SensorSettings, ExpectedReadbacksMatchTheRealDevice)
         std::string diff;
         for (size_t i = 1; i < replies.size() && !matched; i++)
         {
-            diff = compareReadback(replies[i], it.expected);
+            diff = compareReadback(replies[i], it.expected_values);
             matched = diff.empty();
         }
-        EXPECT_TRUE(matched) << it.name << ": " << it.write << ": " << diff;
+        EXPECT_TRUE(matched)
+            << it.name << ": " << it.write_telegram << ": " << diff;
     }
 }
 
@@ -175,11 +215,11 @@ TEST(SensorSettings, DefaultsMatchTheTeamsCurrentSensorConfiguration)
         {
             continue;  // disabled filters with different (unused) stored bounds
         }
-        if (it.read.empty())
+        if (it.read_telegram.empty())
         {
             continue;
         }
-        EXPECT_EQ(compareReadback(rb.at(it.name).at(0), it.expected), "")
+        EXPECT_EQ(compareReadback(rb.at(it.name).at(0), it.expected_values), "")
             << it.name;
     }
 }
@@ -256,7 +296,7 @@ TEST(ColaClient, RequestReplyAndErrors)
 
     Result r = c.client.request("sRN FREchoFilter", 1000);
     ASSERT_TRUE(r.ok()) << r.describe();
-    EXPECT_EQ(r.reply.args, (std::vector<std::string>{"2"}));
+    EXPECT_EQ(r.reply.arguments, (std::vector<std::string>{"2"}));
 
     r = c.client.request("sWN FREchoFilter 0", 1000);  // not logged in
     EXPECT_EQ(r.status, Status::SopasError);
@@ -281,7 +321,7 @@ TEST(ColaClient, DeliversEventsAndSurvivesFragmentation)
     c.client.onEvent([&](const Telegram& t) { events.push_back(t.name); });
     const Result r = c.client.request("sRN DevSta", 2000);
     ASSERT_TRUE(r.ok()) << r.describe();
-    EXPECT_EQ(r.reply.args, (std::vector<std::string>{"3"}));
+    EXPECT_EQ(r.reply.arguments, (std::vector<std::string>{"3"}));
     EXPECT_EQ(
         events,
         (std::vector<std::string>{"ContaminationResult", "ContaminationData"}));
@@ -387,7 +427,7 @@ TEST(SensorSession, StartAppliesVerifiesAndStartsStreaming)
     SensorStatus st;
     std::string err;
     ASSERT_TRUE(session.readStatus(st, err)) << err;
-    EXPECT_TRUE(st.have_state);
+    EXPECT_TRUE(st.has_state);
     EXPECT_EQ(st.state, 3);
 }
 
@@ -534,7 +574,7 @@ TEST(SensorSettings, TimeSyncItems)
         {
             if (it.name.rfind("TSC", 0) == 0)
             {
-                n.push_back(it.write);
+                n.push_back(it.write_telegram);
             }
         }
         return n;
@@ -580,11 +620,11 @@ TEST(SensorSession, ReadsStatusLikeTheDevicePrintsIt)
     // recorded values: 48.32 deg C (first recording), all sectors clean, no
     // contamination
     ASSERT_TRUE(session.readStatus(st, err)) << err;
-    EXPECT_TRUE(st.have_state && st.have_temperature && st.have_contamination);
+    EXPECT_TRUE(st.has_state && st.has_temperature && st.has_contamination);
     EXPECT_EQ(st.state, 3);
     EXPECT_NEAR(st.temperature_c, 48.32f, 0.01f);
     EXPECT_FALSE(st.contamination_warning || st.contamination_error);
-    ASSERT_TRUE(st.have_sectors);
+    ASSERT_TRUE(st.has_sectors);
     EXPECT_EQ(st.sectors, std::vector<int>(12, 1));
 
     // the second recording (29.05 deg C) and the manual's examples
@@ -607,8 +647,8 @@ TEST(SensorSession, ReadsStatusLikeTheDevicePrintsIt)
     // a variable without values is left unset rather than failing
     fake.setValue("ContaminationData", "");
     ASSERT_TRUE(session.readStatus(st, err)) << err;
-    EXPECT_FALSE(st.have_sectors);
-    EXPECT_TRUE(st.have_state);
+    EXPECT_FALSE(st.has_sectors);
+    EXPECT_TRUE(st.has_state);
 }
 
 TEST(SensorSession, StatusReportsALostConnection)

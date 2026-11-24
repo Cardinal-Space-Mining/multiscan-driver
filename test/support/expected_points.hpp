@@ -34,11 +34,20 @@ namespace ms_test
 
 struct ExpectedPoint
 {
-    float x, y, z, intensity, range, azimuth, elevation;
-    uint32_t layer, echo, index;
+    float x;
+    float y;
+    float z;
+    float intensity;
+    float range;
+    float azimuth;
+    float elevation;
+    uint32_t layer;
+    uint32_t echo;
+    uint32_t index;
     uint64_t time_us;
     float reflective;
 };
+
 
 /* The layer table the driver maps elevations onto (mdeg, phi sign). */
 inline constexpr std::array<int, 16> LAYER_ELEVATION_MDEG = {
@@ -61,119 +70,156 @@ inline constexpr std::array<int, 16> LAYER_ELEVATION_MDEG = {
 
 inline uint32_t layerIdFromPhi(float phi_rad)
 {
-    const int mdeg = static_cast<int>(
+    const int millidegrees = static_cast<int>(
         std::lround(phi_rad * 180000.0 / 3.14159265358979323846));
     uint32_t best = 0;
-    for (uint32_t i = 1; i < LAYER_ELEVATION_MDEG.size(); i++)
+    for (uint32_t layer = 1; layer < LAYER_ELEVATION_MDEG.size(); layer++)
     {
-        if (std::abs(mdeg - LAYER_ELEVATION_MDEG[i]) <
-            std::abs(mdeg - LAYER_ELEVATION_MDEG[best]))
+        if (std::abs(millidegrees - LAYER_ELEVATION_MDEG[layer]) <
+            std::abs(millidegrees - LAYER_ELEVATION_MDEG[best]))
         {
-            best = i;
+            best = layer;
         }
     }
     return best;
 }
 
+
+namespace detail
+{
+
+/* The points of one line (layer) of a module, in beam order. */
+inline void appendLinePoints(
+    const Module& module,
+    uint32_t line,
+    uint32_t layer_id,
+    uint32_t echo,
+    std::vector<ExpectedPoint>& out)
+{
+    const float elevation = -module.phi[line];
+    const float sin_elevation = std::sin(elevation);
+    const float cos_elevation = std::cos(elevation);
+    const float azimuth_step =
+        (module.theta_stop[line] - module.theta_start[line]) /
+        static_cast<float>(std::max(1, static_cast<int>(module.num_beams) - 1));
+    const uint64_t start_us = module.time_start_us[line];
+    const uint64_t stop_us = module.time_stop_us[line];
+    const bool has_distance = module.echo_content & ECHO_HAS_DISTANCE;
+    const bool has_rssi = module.echo_content & ECHO_HAS_RSSI;
+    const bool has_azimuth = module.beam_content & BEAM_HAS_AZIMUTH;
+    const bool has_properties = module.beam_content & BEAM_HAS_PROPERTIES;
+
+    for (uint32_t beam_index = 0; beam_index < module.num_beams; beam_index++)
+    {
+        const Beam& beam = module.at(line, beam_index);
+        ExpectedPoint point;
+        point.range = has_distance
+                          ? (module.distance_scale *
+                             static_cast<float>(beam.echoes[echo].distance)) /
+                                1000.f
+                          : 0.f;
+        point.intensity =
+            has_rssi ? static_cast<float>(beam.echoes[echo].rssi) : 0.f;
+        point.azimuth = has_azimuth
+                            ? decodeAzimuth(beam.azimuth)
+                            : module.theta_start[line] +
+                                  static_cast<float>(beam_index) * azimuth_step;
+        point.elevation = elevation;
+        point.x = point.range * std::cos(point.azimuth) * cos_elevation;
+        point.y = point.range * std::sin(point.azimuth) * cos_elevation;
+        point.z = point.range * sin_elevation;
+        point.layer = layer_id;
+        point.echo = echo;
+        point.index =
+            static_cast<uint32_t>(module.segment_counter) * module.num_beams +
+            beam_index;
+        point.time_us = (beam_index * (stop_us - start_us)) /
+                            std::max<uint64_t>(1, module.num_beams - 1) +
+                        start_us;
+        point.reflective =
+            has_properties ? static_cast<float>(beam.properties & 1) : 0.f;
+        out.push_back(point);
+    }
+}
+
+}  // namespace detail
+
 inline std::vector<ExpectedPoint> expectedPoints(
-    const ScanTelegram& t,
+    const ScanTelegram& telegram,
     int echo_selection = 1)
 {
-    struct Line
+    struct LineReference
     {
-        const Module* m;
+        const Module* module;
         uint32_t line;
-        uint32_t layer;
+        uint32_t layer_id;
     };
-    std::vector<Line> lines;
-    for (const Module& m : t.modules)
+    std::vector<LineReference> lines;
+    for (const Module& module : telegram.modules)
     {
-        for (uint32_t l = 0; l < m.lines; l++)
+        for (uint32_t line = 0; line < module.num_lines; line++)
         {
-            lines.push_back({&m, l, layerIdFromPhi(m.phi[l])});
+            lines.push_back({&module, line, layerIdFromPhi(module.phi[line])});
         }
     }
     std::stable_sort(
         lines.begin(),
         lines.end(),
-        [](const Line& a, const Line& b) { return a.layer < b.layer; });
+        [](const LineReference& a, const LineReference& b)
+        { return a.layer_id < b.layer_id; });
 
     std::vector<ExpectedPoint> out;
-    for (const Line& ln : lines)
+    for (const LineReference& line : lines)
     {
-        const Module& m = *ln.m;
+        const Module& module = *line.module;
         const uint32_t echo =
             (echo_selection >= 1 &&
-             static_cast<uint32_t>(echo_selection) <= m.echoes)
+             static_cast<uint32_t>(echo_selection) <= module.num_echoes)
                 ? static_cast<uint32_t>(echo_selection - 1)
                 : 0;
-        const float el = -m.phi[ln.line];
-        const float sin_el = std::sin(el), cos_el = std::cos(el);
-        const float az_delta =
-            (m.theta_stop[ln.line] - m.theta_start[ln.line]) /
-            static_cast<float>(std::max(1, static_cast<int>(m.beams) - 1));
-        const uint64_t t0 = m.time_start_us[ln.line],
-                       t1 = m.time_stop_us[ln.line];
-        for (uint32_t b = 0; b < m.beams; b++)
-        {
-            const Beam& beam = m.at(ln.line, b);
-            ExpectedPoint p;
-            p.range = (m.content_echoes & ECHO_HAS_DISTANCE)
-                          ? (m.distance_scale *
-                             static_cast<float>(beam.echoes[echo].distance)) /
-                                1000.f
-                          : 0.f;
-            p.intensity = (m.content_echoes & ECHO_HAS_RSSI)
-                              ? static_cast<float>(beam.echoes[echo].rssi)
-                              : 0.f;
-            p.azimuth =
-                (m.content_beams & BEAM_HAS_AZIMUTH)
-                    ? decodeAzimuth(beam.azimuth)
-                    : m.theta_start[ln.line] + static_cast<float>(b) * az_delta;
-            p.elevation = el;
-            p.x = p.range * std::cos(p.azimuth) * cos_el;
-            p.y = p.range * std::sin(p.azimuth) * cos_el;
-            p.z = p.range * sin_el;
-            p.layer = ln.layer;
-            p.echo = echo;
-            p.index = static_cast<uint32_t>(m.segment_counter) * m.beams + b;
-            p.time_us =
-                (b * (t1 - t0)) / std::max<uint64_t>(1, m.beams - 1) + t0;
-            p.reflective = (m.content_beams & BEAM_HAS_PROPERTIES)
-                               ? static_cast<float>(beam.properties & 1)
-                               : 0.f;
-            out.push_back(p);
-        }
+        detail::appendLinePoints(module, line.line, line.layer_id, echo, out);
     }
     return out;
 }
 
-/* Field offsets of the driver's default (MS_POINT_FIELD_ENABLE_ALL) layout. */
+
+/* Field offsets of the driver's layout with every field
+ * (PointLayout::all()). */
 struct AllFieldsLayout
 {
-    static constexpr uint32_t x = 0, y = 4, z = 8, intensity = 12, range = 16,
-                              azimuth = 20, elevation = 24, layer = 28,
-                              echo = 32, index = 36, tl = 40, th = 44,
-                              reflective = 48, point_step = 52;
+    static constexpr uint32_t x = 0;
+    static constexpr uint32_t y = 4;
+    static constexpr uint32_t z = 8;
+    static constexpr uint32_t intensity = 12;
+    static constexpr uint32_t range = 16;
+    static constexpr uint32_t azimuth = 20;
+    static constexpr uint32_t elevation = 24;
+    static constexpr uint32_t layer = 28;
+    static constexpr uint32_t echo = 32;
+    static constexpr uint32_t index = 36;
+    static constexpr uint32_t tl = 40;  // time, low and high 32 bits
+    static constexpr uint32_t th = 44;
+    static constexpr uint32_t reflective = 48;
+    static constexpr uint32_t point_step = 52;
 };
 
-inline ExpectedPoint readAllFieldsPoint(const uint8_t* p)
+inline ExpectedPoint readAllFieldsPoint(const uint8_t* point)
 {
-    using L = AllFieldsLayout;
-    ExpectedPoint e;
-    std::memcpy(&e.x, p + L::x, 4);
-    std::memcpy(&e.y, p + L::y, 4);
-    std::memcpy(&e.z, p + L::z, 4);
-    std::memcpy(&e.intensity, p + L::intensity, 4);
-    std::memcpy(&e.range, p + L::range, 4);
-    std::memcpy(&e.azimuth, p + L::azimuth, 4);
-    std::memcpy(&e.elevation, p + L::elevation, 4);
-    std::memcpy(&e.layer, p + L::layer, 4);
-    std::memcpy(&e.echo, p + L::echo, 4);
-    std::memcpy(&e.index, p + L::index, 4);
-    std::memcpy(&e.time_us, p + L::tl, 8);
-    std::memcpy(&e.reflective, p + L::reflective, 4);
-    return e;
+    using Layout = AllFieldsLayout;
+    ExpectedPoint fields;
+    std::memcpy(&fields.x, point + Layout::x, 4);
+    std::memcpy(&fields.y, point + Layout::y, 4);
+    std::memcpy(&fields.z, point + Layout::z, 4);
+    std::memcpy(&fields.intensity, point + Layout::intensity, 4);
+    std::memcpy(&fields.range, point + Layout::range, 4);
+    std::memcpy(&fields.azimuth, point + Layout::azimuth, 4);
+    std::memcpy(&fields.elevation, point + Layout::elevation, 4);
+    std::memcpy(&fields.layer, point + Layout::layer, 4);
+    std::memcpy(&fields.echo, point + Layout::echo, 4);
+    std::memcpy(&fields.index, point + Layout::index, 4);
+    std::memcpy(&fields.time_us, point + Layout::tl, 8);
+    std::memcpy(&fields.reflective, point + Layout::reflective, 4);
+    return fields;
 }
 
 }  // namespace ms_test

@@ -52,247 +52,310 @@ namespace multiscan::sopas
 
 namespace
 {
-// booleans and small enums: one digit, the same in decimal and hex
-std::string flag(bool b) { return b ? "1" : "0"; }
-std::string digit(int v) { return std::to_string(v); }
 
-int64_t toTenThousandthDeg(double deg)
+// booleans and small enums: one digit, the same in decimal and hex
+std::string flag(bool value) { return value ? "1" : "0"; }
+std::string digit(int value) { return std::to_string(value); }
+
+int64_t toTenThousandthDeg(double degrees)
 {
-    return static_cast<int64_t>(std::llround(deg * 10000.));
+    return static_cast<int64_t>(std::llround(degrees * 10000.));
 }
+
+/* Collects "sWN <name> <arguments>" / "sRN <name>" items. */
+class SettingItemList
+{
+public:
+    void add(
+        const std::string& name,
+        const std::string& arguments,
+        std::vector<int64_t> expected_values)
+    {
+        this->items.push_back(
+            {name,
+             "sWN " + name + " " + arguments,
+             "sRN " + name,
+             std::move(expected_values)});
+    }
+
+    /* A method: no read-back, its reply status must be 0. */
+    void addMethod(const std::string& name, const std::string& arguments)
+    {
+        this->items.push_back({name, "sMN " + name + " " + arguments, "", {0}});
+    }
+
+public:
+    std::vector<SettingItem> items;
+};
+
+void addLayers(const SensorSettings& settings, SettingItemList& list)
+{
+    bool all_layers = true;
+    for (const bool enabled : settings.layers)
+    {
+        all_layers &= enabled;
+    }
+    std::string arguments = flag(!all_layers);
+    std::vector<int64_t> expected = {!all_layers};
+    for (const bool enabled : settings.layers)
+    {
+        arguments += " " + flag(enabled);
+        expected.push_back(enabled);
+    }
+    list.add("LFPlayerFilter", arguments, expected);
+}
+
+void addOutputRange(const SensorSettings& settings, SettingItemList& list)
+{
+    const int64_t start = toTenThousandthDeg(settings.output_range_start_deg);
+    const int64_t stop = toTenThousandthDeg(settings.output_range_stop_deg);
+    // reserved (1), resolution (1250 = 0.125 deg, fixed), start, stop
+    list.add(
+        "LMPoutputRange",
+        "1 +1250 " + signedDecimal(start) + " " + signedDecimal(stop),
+        {1, 1250, start, stop});
+}
+
+void addPointFilters(const SensorSettings& settings, SettingItemList& list)
+{
+    const SensorSettings::RangeFilter& range = settings.range_filter;
+    list.add(
+        "LFPradialDistanceRangeFilter",
+        flag(range.enabled) + " " + signedDecimal(range.min_mm) + " " +
+            signedDecimal(range.max_mm),
+        {range.enabled, range.min_mm, range.max_mm});
+
+    const SensorSettings::CubicFilter& cubic = settings.cubic_filter;
+    std::string cubic_arguments = flag(cubic.enabled);
+    std::vector<int64_t> cubic_expected = {cubic.enabled};
+    for (int axis = 0; axis < 3; axis++)
+    {
+        cubic_arguments += " " + signedDecimal(cubic.min_mm[axis]) + " " +
+                           signedDecimal(cubic.max_mm[axis]);
+        cubic_expected.push_back(cubic.min_mm[axis]);
+        cubic_expected.push_back(cubic.max_mm[axis]);
+    }
+    list.add("LFPcubicareafilter", cubic_arguments, cubic_expected);
+
+    // the threshold "must be taken" as 500 mm (operating instructions)
+    list.add(
+        "LFPparticle",
+        flag(settings.particle_filter) + " +500",
+        {settings.particle_filter, 500});
+    list.add("MCSenseLevel", flag(settings.fog_filter), {settings.fog_filter});
+}
+
+void addScanFilters(const SensorSettings& settings, SettingItemList& list)
+{
+    const SensorSettings::MovingAverage& average = settings.moving_average;
+    list.add(
+        "LFPmovingAveragingFilter",
+        flag(average.enabled) + " " + signedDecimal(average.depth),
+        {average.enabled, average.depth});
+
+    const SensorSettings::IntervalFilter& interval = settings.interval_filter;
+    list.add(
+        "LFPintervalFilter",
+        flag(interval.enabled) + " " + signedDecimal(interval.factor),
+        {interval.enabled, interval.factor});
+}
+
+void addContamination(const SensorSettings& settings, SettingItemList& list)
+{
+    const SensorSettings::Contamination& contamination = settings.contamination;
+    const int64_t cover = contamination.custom_sectors ? 255 : 0;
+    std::string arguments = digit(static_cast<int>(contamination.strategy)) +
+                            " " + signedDecimal(contamination.response_time_s) +
+                            " " +
+                            digit(static_cast<int>(contamination.sensitivity)) +
+                            " " + signedDecimal(cover);
+    std::vector<int64_t> expected = {
+        static_cast<int>(contamination.strategy),
+        contamination.response_time_s,
+        static_cast<int>(contamination.sensitivity),
+        cover};
+    for (const bool sector : contamination.sectors)
+    {
+        arguments += " " + flag(sector);
+        expected.push_back(sector);
+    }
+    arguments +=
+        " " + flag(contamination.warning) + " " + flag(contamination.error);
+    expected.push_back(contamination.warning);
+    expected.push_back(contamination.error);
+    list.add("ContaminationConfig", arguments, expected);
+}
+
+void addTimeSync(const SensorSettings& settings, SettingItemList& list)
+{
+    const SensorSettings::TimeSync& sync = settings.time_sync;
+    list.add(
+        "TSCRole",
+        digit(static_cast<int>(sync.mode)),
+        {static_cast<int>(sync.mode)});
+    if (sync.mode != TimeSyncMode::Ntp)
+    {
+        return;
+    }
+    // validate() accepts an empty server; the driver fills it in first
+    const auto server =
+        parseIpv4(sync.ntp_server).value_or(std::array<uint8_t, 4>{0, 0, 0, 0});
+    list.add(
+        "TSCTCSrvAddr",
+        signedDecimal(server[0]) + " " + signedDecimal(server[1]) + " " +
+            signedDecimal(server[2]) + " " + signedDecimal(server[3]),
+        {server[0], server[1], server[2], server[3]});
+    list.add(
+        "TSCTCupdatetime",
+        signedDecimal(sync.ntp_update_s),
+        {sync.ntp_update_s});
+    list.add("TSCTCtimezone", signedDecimal(TIMEZONE_UTC), {TIMEZONE_UTC});
+}
+
 }  // namespace
 
-std::string num(int64_t v)
+
+
+// --- Settings ----------------------------------------------------------------
+
+std::string signedDecimal(int64_t value)
 {
-    return (v < 0 ? "-" : "+") + std::to_string(v < 0 ? -v : v);
+    return (value < 0 ? "-" : "+") + std::to_string(value < 0 ? -value : value);
 }
 
 std::string SensorSettings::validate() const
 {
-    std::ostringstream e;
-    if (!(output_range_start_deg >= -180. && output_range_stop_deg <= 180. &&
-          output_range_start_deg < output_range_stop_deg))
+    std::ostringstream problems;
+    if (!(this->output_range_start_deg >= -180. &&
+          this->output_range_stop_deg <= 180. &&
+          this->output_range_start_deg < this->output_range_stop_deg))
     {
-        e << "output range must satisfy -180 <= start < stop <= 180 deg; ";
+        problems
+            << "output range must satisfy -180 <= start < stop <= 180 deg; ";
     }
     bool any_layer = false;
-    for (bool l : layers)
+    for (const bool enabled : this->layers)
     {
-        any_layer |= l;
+        any_layer |= enabled;
     }
     if (!any_layer)
     {
-        e << "at least one layer must be enabled; ";
+        problems << "at least one layer must be enabled; ";
     }
-    if (range_filter.min_mm < 0 || range_filter.max_mm > 200000 ||
-        range_filter.min_mm > range_filter.max_mm)
+    if (this->range_filter.min_mm < 0 || this->range_filter.max_mm > 200000 ||
+        this->range_filter.min_mm > this->range_filter.max_mm)
     {
-        e << "range filter must satisfy 0 <= min <= max <= 200000 mm; ";
+        problems << "range filter must satisfy 0 <= min <= max <= 200000 mm; ";
     }
-    for (int i = 0; i < 3; i++)
+    for (int axis = 0; axis < 3; axis++)
     {
-        if (cubic_filter.min_mm[i] < -200000 ||
-            cubic_filter.max_mm[i] > 200000 ||
-            cubic_filter.min_mm[i] > cubic_filter.max_mm[i])
+        if (this->cubic_filter.min_mm[axis] < -200000 ||
+            this->cubic_filter.max_mm[axis] > 200000 ||
+            this->cubic_filter.min_mm[axis] > this->cubic_filter.max_mm[axis])
         {
-            e << "cubic filter bounds must satisfy -200000 <= min <= max <= 200000 mm; ";
+            problems << "cubic filter bounds must satisfy -200000 <= min <= "
+                        "max <= 200000 mm; ";
             break;
         }
     }
-    if (moving_average.depth < 2 || moving_average.depth > 10)
+    if (this->moving_average.depth < 2 || this->moving_average.depth > 10)
     {
-        e << "moving average depth must be 2..10; ";
+        problems << "moving average depth must be 2..10; ";
     }
-    if (interval_filter.factor < 2 || interval_filter.factor > 50)
+    if (this->interval_filter.factor < 2 || this->interval_filter.factor > 50)
     {
-        e << "interval filter factor must be 2..50; ";
+        problems << "interval filter factor must be 2..50; ";
     }
-    if (contamination.response_time_s < 3 || contamination.response_time_s > 60)
+    if (this->contamination.response_time_s < 3 ||
+        this->contamination.response_time_s > 60)
     {
-        e << "contamination response time must be 3..60 s; ";
+        problems << "contamination response time must be 3..60 s; ";
     }
-    if (time_sync.mode == TimeSyncMode::Ntp)
+    if (this->time_sync.mode == TimeSyncMode::Ntp)
     {
-        if (time_sync.ntp_update_s < 1 || time_sync.ntp_update_s > 3600)
+        if (this->time_sync.ntp_update_s < 1 ||
+            this->time_sync.ntp_update_s > 3600)
         {
-            e << "NTP update interval must be 1..3600 s; ";
+            problems << "NTP update interval must be 1..3600 s; ";
         }
-        if (!time_sync.ntp_server.empty() && !parseIpv4(time_sync.ntp_server))
+        if (!this->time_sync.ntp_server.empty() &&
+            !parseIpv4(this->time_sync.ntp_server))
         {
-            e << "NTP server must be an IPv4 address; ";
+            problems << "NTP server must be an IPv4 address; ";
         }
     }
-    std::string s = e.str();
-    if (s.size() >= 2)
+    std::string text = problems.str();
+    if (text.size() >= 2)
     {
-        s.resize(s.size() - 2);
+        text.resize(text.size() - 2);  // the last "; "
     }
-    return s;
+    return text;
 }
 
-std::vector<SettingItem> settingItems(const SensorSettings& s)
+std::vector<SettingItem> settingItems(const SensorSettings& settings)
 {
-    std::vector<SettingItem> items;
-    auto add = [&items](
-                   std::string name,
-                   std::string args,
-                   std::vector<int64_t> expected)
-    {
-        items.push_back(
-            {name,
-             "sWN " + name + " " + args,
-             "sRN " + name,
-             std::move(expected)});
-    };
-
-    add("FREchoFilter",
-        digit(static_cast<int>(s.echo_filter)),
-        {static_cast<int>(s.echo_filter)});
-
-    {
-        bool all = true;
-        for (bool l : s.layers)
-        {
-            all &= l;
-        }
-        std::string args = flag(!all);
-        std::vector<int64_t> exp = {!all};
-        for (bool l : s.layers)
-        {
-            args += " " + flag(l);
-            exp.push_back(l);
-        }
-        add("LFPlayerFilter", args, exp);
-    }
-
-    {
-        const int64_t a = toTenThousandthDeg(s.output_range_start_deg);
-        const int64_t b = toTenThousandthDeg(s.output_range_stop_deg);
-        // reserved (1), resolution (1250 = 0.125 deg, fixed), start, stop
-        add("LMPoutputRange",
-            "1 +1250 " + num(a) + " " + num(b),
-            {1, 1250, a, b});
-    }
-
-    add("LFPradialDistanceRangeFilter",
-        flag(s.range_filter.enabled) + " " + num(s.range_filter.min_mm) + " " +
-            num(s.range_filter.max_mm),
-        {s.range_filter.enabled, s.range_filter.min_mm, s.range_filter.max_mm});
-
-    {
-        const auto& c = s.cubic_filter;
-        std::string args = flag(c.enabled);
-        std::vector<int64_t> exp = {c.enabled};
-        for (int i = 0; i < 3; i++)
-        {
-            args += " " + num(c.min_mm[i]) + " " + num(c.max_mm[i]);
-            exp.push_back(c.min_mm[i]);
-            exp.push_back(c.max_mm[i]);
-        }
-        add("LFPcubicareafilter", args, exp);
-    }
-
-    // the threshold "must be taken" as 500 mm (operating instructions)
-    add("LFPparticle",
-        flag(s.particle_filter) + " +500",
-        {s.particle_filter, 500});
-    add("MCSenseLevel", flag(s.fog_filter), {s.fog_filter});
-    add("LFPmovingAveragingFilter",
-        flag(s.moving_average.enabled) + " " + num(s.moving_average.depth),
-        {s.moving_average.enabled, s.moving_average.depth});
-    add("LFPintervalFilter",
-        flag(s.interval_filter.enabled) + " " + num(s.interval_filter.factor),
-        {s.interval_filter.enabled, s.interval_filter.factor});
-
-    {
-        const auto& c = s.contamination;
-        const int64_t cover = c.custom_sectors ? 255 : 0;
-        std::string args =
-            digit(static_cast<int>(c.strategy)) + " " + num(c.response_time_s) +
-            " " + digit(static_cast<int>(c.sensitivity)) + " " + num(cover);
-        std::vector<int64_t> exp = {
-            static_cast<int>(c.strategy),
-            c.response_time_s,
-            static_cast<int>(c.sensitivity),
-            cover};
-        for (bool b : c.sectors)
-        {
-            args += " " + flag(b);
-            exp.push_back(b);
-        }
-        args += " " + flag(c.warning) + " " + flag(c.error);
-        exp.push_back(c.warning);
-        exp.push_back(c.error);
-        add("ContaminationConfig", args, exp);
-    }
-
-    add("TSCRole",
-        digit(static_cast<int>(s.time_sync.mode)),
-        {static_cast<int>(s.time_sync.mode)});
-    if (s.time_sync.mode == TimeSyncMode::Ntp)
-    {
-        // validate() accepts an empty server; the driver fills it in first
-        const auto ip = parseIpv4(s.time_sync.ntp_server)
-                            .value_or(std::array<uint8_t, 4>{0, 0, 0, 0});
-        add("TSCTCSrvAddr",
-            num(ip[0]) + " " + num(ip[1]) + " " + num(ip[2]) + " " + num(ip[3]),
-            {ip[0], ip[1], ip[2], ip[3]});
-        add("TSCTCupdatetime",
-            num(s.time_sync.ntp_update_s),
-            {s.time_sync.ntp_update_s});
-        add("TSCTCtimezone", num(TIMEZONE_UTC), {TIMEZONE_UTC});
-    }
-
-    // a method without read-back; its reply status must be 0
-    items.push_back(
-        {"mCLsetscancfglist",
-         "sMN mCLsetscancfglist " + flag(s.interlaced),
-         "",
-         {0}});
-    return items;
+    SettingItemList list;
+    list.add(
+        "FREchoFilter",
+        digit(static_cast<int>(settings.echo_filter)),
+        {static_cast<int>(settings.echo_filter)});
+    addLayers(settings, list);
+    addOutputRange(settings, list);
+    addPointFilters(settings, list);
+    addScanFilters(settings, list);
+    addContamination(settings, list);
+    addTimeSync(settings, list);
+    list.addMethod("mCLsetscancfglist", flag(settings.interlaced));
+    return list.items;
 }
 
 std::string compareReadback(
-    const std::vector<std::string>& args,
+    const std::vector<std::string>& arguments,
     const std::vector<int64_t>& expected)
 {
-    std::ostringstream e;
-    if (args.size() != expected.size())
+    std::ostringstream difference;
+    if (arguments.size() != expected.size())
     {
-        e << "expected " << expected.size() << " values, sensor returned "
-          << args.size();
-        return e.str();
+        difference << "expected " << expected.size()
+                   << " values, sensor returned " << arguments.size();
+        return difference.str();
     }
-    for (size_t i = 0; i < args.size(); i++)
+    for (size_t i = 0; i < arguments.size(); i++)
     {
-        const auto v = parseNumber(args[i]);
-        if (!v ||
-            static_cast<uint32_t>(*v) != static_cast<uint32_t>(expected[i]))
+        const auto value = parseNumber(arguments[i]);
+        if (value &&
+            static_cast<uint32_t>(*value) == static_cast<uint32_t>(expected[i]))
         {
-            e << "value " << i << ": expected " << expected[i]
-              << ", sensor has '" << args[i] << "'";
-            if (v)
-            {
-                e << " (" << static_cast<int32_t>(static_cast<uint32_t>(*v))
-                  << ")";
-            }
-            return e.str();
+            continue;
         }
+        difference << "value " << i << ": expected " << expected[i]
+                   << ", sensor has '" << arguments[i] << "'";
+        if (value)
+        {
+            difference << " ("
+                       << static_cast<int32_t>(static_cast<uint32_t>(*value))
+                       << ")";
+        }
+        return difference.str();
     }
     return "";
 }
 
-std::optional<EchoFilter> echoFilterFromString(const std::string& s)
+
+
+// --- Parameter values --------------------------------------------------------
+
+std::optional<EchoFilter> echoFilterFromString(const std::string& text)
 {
-    if (s == "first")
+    if (text == "first")
     {
         return EchoFilter::First;
     }
-    if (s == "all")
+    if (text == "all")
     {
         return EchoFilter::All;
     }
-    if (s == "last")
+    if (text == "last")
     {
         return EchoFilter::Last;
     }
@@ -300,17 +363,17 @@ std::optional<EchoFilter> echoFilterFromString(const std::string& s)
 }
 
 std::optional<ContaminationStrategy> contaminationStrategyFromString(
-    const std::string& s)
+    const std::string& text)
 {
-    if (s == "inactive")
+    if (text == "inactive")
     {
         return ContaminationStrategy::Inactive;
     }
-    if (s == "high_availability")
+    if (text == "high_availability")
     {
         return ContaminationStrategy::HighAvailability;
     }
-    if (s == "sensitive")
+    if (text == "sensitive")
     {
         return ContaminationStrategy::Sensitive;
     }
@@ -318,48 +381,48 @@ std::optional<ContaminationStrategy> contaminationStrategyFromString(
 }
 
 std::optional<ContaminationSensitivity> contaminationSensitivityFromString(
-    const std::string& s)
+    const std::string& text)
 {
-    if (s == "high")
+    if (text == "high")
     {
         return ContaminationSensitivity::High;
     }
-    if (s == "medium")
+    if (text == "medium")
     {
         return ContaminationSensitivity::Medium;
     }
-    if (s == "low")
+    if (text == "low")
     {
         return ContaminationSensitivity::Low;
     }
     return std::nullopt;
 }
 
-std::optional<TimeSyncMode> timeSyncModeFromString(const std::string& s)
+std::optional<TimeSyncMode> timeSyncModeFromString(const std::string& text)
 {
-    if (s == "off")
+    if (text == "off")
     {
         return TimeSyncMode::Off;
     }
-    if (s == "ntp")
+    if (text == "ntp")
     {
         return TimeSyncMode::Ntp;
     }
-    if (s == "ptp")
+    if (text == "ptp")
     {
         return TimeSyncMode::Ptp;
     }
     return std::nullopt;
 }
 
-std::optional<std::array<uint8_t, 4>> parseIpv4(const std::string& s)
+std::optional<std::array<uint8_t, 4>> parseIpv4(const std::string& text)
 {
-    in_addr a{};
-    if (::inet_pton(AF_INET, s.c_str(), &a) != 1)
+    in_addr address{};
+    if (::inet_pton(AF_INET, text.c_str(), &address) != 1)
     {
         return std::nullopt;
     }
-    const uint32_t ip = ntohl(a.s_addr);
+    const uint32_t ip = ntohl(address.s_addr);
     return std::array<uint8_t, 4>{
         static_cast<uint8_t>(ip >> 24),
         static_cast<uint8_t>(ip >> 16),

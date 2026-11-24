@@ -97,6 +97,17 @@ ghost-ml-ws (`annotator_app`) on every frame. `mode: drop` removes the points
 it flags, so clouds get smaller; `mode: annotate` keeps all of them and adds
 the field `artifact` with each point's probability.
 
+Turning it on needs no other settings: the driver ships two models in
+`models/` and installs them. `model_file` and `fallback_model_file` take
+either a path or the name of an installed model:
+
+| Model | Uses | Default for |
+|---|---|---|
+| `artifact_full` | range and intensity | `model_file` |
+| `artifact_xyz` | range only | `fallback_model_file`, used if the first can't be loaded |
+
+See `models/README.md` for where they come from and how to replace them.
+
 It works on segments as they arrive, on one thread of its own. A point is
 judged by its neighbours (2 layers and 4 columns either side, and the same
 place in the two previous frames), so a grid cell is classified as soon as
@@ -115,12 +126,15 @@ must be for this sensor (14 layers, 360 columns, 20 Hz); the high-resolution
 layers are not part of its grid and their points are never dropped. With
 `sensor.interlaced` the filter doesn't run.
 
-`src/ghost/artifact_filter/artifact_filter.hpp` is a copy of ghost-ml-ws
-`src/ghost_tester/include/artifact_filter/artifact_filter.hpp`; change it
-there (where it is checked against the Python) and copy it over.
-`bench_ghost_filter MODEL [CAPTURE] [--paced]` measures the filter on a
-capture and checks it against the whole-frame result; use it to judge a new
-machine.
+The classifier is `include/multiscan_driver/artifact_filter/` (header only,
+standard library only). The driver owns it, and ghost-ml-ws builds its tools
+against it, including the check against the Python feature code. After
+changing it, run that check in ghost-ml-ws (`artifact_filter_check`; see
+its README).
+
+`bench_ghost_filter [MODEL] [CAPTURE] [--paced]` measures the filter on a
+capture (by default the installed full model on `test/data/live_1echo`) and
+checks it against the whole-frame result. Use it to judge a new machine.
 
 ## Timestamps
 
@@ -184,12 +198,17 @@ Contamination is only evaluated when `sensor.contamination.strategy` isn't
 ```
 src/compact/        Compact format decoder and the published point layout
 src/frame_assembler segments -> frames by frame number; time offset applied here
-src/ghost/          ghost point filter (copy of artifact_filter.hpp, per-segment driver)
+src/ghost/          ghost point filter: per-segment filtering, its worker thread
 src/net/            batched UDP receive (recvmmsg, kernel receive timestamps)
 src/sopas/          CoLa A client, start/stop/status sequence, sensor settings
 src/time_sync       sensor clock -> host clock estimator
-src/multiscan_driver.cpp   the ROS node
+src/node/           the ROS node: setup and publishing (multiscan_node), the
+                    receive thread (receive_loop), parameters (driver_config),
+                    /diagnostics (diagnostics)
+src/main.cpp        node entry point
 include/multiscan_driver/multiscan_spec.hpp   dense-buffer geometry used by net_adapter's codec
+include/multiscan_driver/artifact_filter/     the ghost point classifier (shared with ghost-ml-ws)
+models/             default ghost filter models
 ```
 
 `colcon test --packages-select multiscan_driver` runs everything without a
@@ -208,7 +227,8 @@ sensor. CI runs the same on Jazzy and Lyrical (`.github/`).
   framing, the socket layer and the clock estimator.
 - `test_ghost_filter` checks that frames filtered segment by segment get
   exactly the probabilities of the whole frame classified at once, on the
-  captures, with 30-tree cuts of the models (`test/data/ghost_*`).
+  captures, with 30-tree cuts of the models (`test/data/ghost_*`), and that
+  the default models in `models/` load and fit the sensor.
 - `bench_decoder` (not a test) times decoding on the captures. A full
   revolution takes ~0.1 ms with the default layers.
 

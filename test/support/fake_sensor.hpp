@@ -44,280 +44,333 @@ public:
         bool logged_in;  // login state when it arrived
     };
 
+public:
     explicit FakeSensor(const std::string& transcript_path)
     {
-        loadTranscript(transcript_path);
-        listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        int on = 1;
-        ::setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-        sockaddr_in a{};
-        a.sin_family = AF_INET;
-        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        a.sin_port = 0;
-        ::bind(listen_fd, reinterpret_cast<sockaddr*>(&a), sizeof(a));
-        socklen_t len = sizeof(a);
-        ::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&a), &len);
-        listen_port = ntohs(a.sin_port);
-        ::listen(listen_fd, 4);
-        server = std::thread([this] { serve(); });
+        this->loadTranscript(transcript_path);
+        this->listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        const int enable = 1;
+        ::setsockopt(
+            this->listen_fd,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &enable,
+            sizeof(enable));
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;  // any free port
+        ::bind(
+            this->listen_fd,
+            reinterpret_cast<sockaddr*>(&address),
+            sizeof(address));
+        socklen_t address_size = sizeof(address);
+        ::getsockname(
+            this->listen_fd,
+            reinterpret_cast<sockaddr*>(&address),
+            &address_size);
+        this->listen_port = ntohs(address.sin_port);
+        ::listen(this->listen_fd, 4);
+        this->server_thread = std::thread([this] { this->serve(); });
     }
 
     ~FakeSensor()
     {
-        running = false;
-        ::shutdown(listen_fd, SHUT_RDWR);
-        server.join();
-        ::close(listen_fd);
+        this->running = false;
+        ::shutdown(this->listen_fd, SHUT_RDWR);
+        this->server_thread.join();
+        ::close(this->listen_fd);
     }
 
-    uint16_t port() const { return listen_port; }
+public:
+    uint16_t port() const { return this->listen_port; }
 
-    // --- fault injection (set before connecting) ---
-    std::string password = "F4724744";
+    // --- Inspection ----------------------------------------------------------
+    std::vector<Request> requests()
+    {
+        std::lock_guard lock{this->state_mutex};
+        return this->request_log;
+    }
+    std::string value(const std::string& variable)
+    {
+        std::lock_guard lock{this->state_mutex};
+        return this->variables.count(variable) ? this->variables[variable]
+                                               : std::string("<unset>");
+    }
+    void setValue(const std::string& variable, const std::string& value)
+    {
+        std::lock_guard lock{this->state_mutex};
+        this->variables[variable] = value;
+    }
+
+    /* Device formatting of a written argument list: signed decimal numbers
+     * come back as hex (negative ones as 32-bit two's complement). */
+    static std::string toDeviceFormat(const std::string& arguments)
+    {
+        std::istringstream in(arguments);
+        std::string token;
+        std::string formatted;
+        while (in >> token)
+        {
+            if (token[0] == '+' || token[0] == '-')
+            {
+                const uint32_t number =
+                    static_cast<uint32_t>(std::stoll(token));
+                char hex[16];
+                std::snprintf(hex, sizeof(hex), "%X", number);
+                token = hex;
+            }
+            formatted += (formatted.empty() ? "" : " ") + token;
+        }
+        return formatted;
+    }
+
+public:
+    // --- Fault injection (set before connecting) -----------------------------
+    std::string password{"F4724744"};
     std::map<std::string, int> fail_writes;        // variable -> sFA code
     std::set<std::string> ignore_writes;           // accepted but not stored
     std::vector<std::string> events_before_reply;  // sent before every reply
-    bool byte_by_byte = false;
-    bool stale_reply_first =
-        false;  // send a reply to "sRN Stale" before the first reply
-    size_t close_after =
-        SIZE_MAX;  // drop the connection after this many requests
+    bool byte_by_byte{false};
+    /* Send a reply to "sRN Stale" before the first reply. */
+    bool stale_reply_first{false};
+    /* Drop the connection after this many requests. */
+    size_t close_after{SIZE_MAX};
     std::set<std::string> no_reply;  // telegrams (exact) never answered
 
-    // --- inspection ---
-    std::vector<Request> requests()
-    {
-        std::lock_guard l(mtx);
-        return log;
-    }
-    std::string value(const std::string& var)
-    {
-        std::lock_guard l(mtx);
-        return vars.count(var) ? vars[var] : std::string("<unset>");
-    }
-    void setValue(const std::string& var, const std::string& v)
-    {
-        std::lock_guard l(mtx);
-        vars[var] = v;
-    }
+    // --- State the tests check -----------------------------------------------
+    bool interlaced{false};  // set by sMN mCLsetscancfglist
 
-    /* Device formatting of a written argument list. */
-    static std::string toDeviceFormat(const std::string& args)
-    {
-        std::istringstream in(args);
-        std::string tok, out;
-        while (in >> tok)
-        {
-            if (tok[0] == '+' || tok[0] == '-')
-            {
-                const uint32_t v = static_cast<uint32_t>(std::stoll(tok));
-                char buf[16];
-                std::snprintf(buf, sizeof(buf), "%X", v);
-                tok = buf;
-            }
-            out += (out.empty() ? "" : " ") + tok;
-        }
-        return out;
-    }
-
-private:
+protected:
+    /* The variables start with the values the real sensor replied. */
     void loadTranscript(const std::string& path)
     {
-        std::ifstream f(path);
+        std::ifstream transcript(path);
         std::string line;
-        while (std::getline(f, line))
+        while (std::getline(transcript, line))
         {
             if (line.rfind("< sRA ", 0) != 0)
             {
                 continue;
             }
-            const std::string rest = line.substr(6);
-            const size_t sp = rest.find(' ');
-            const std::string name = rest.substr(0, sp);
-            if (!vars.count(name))
+            const std::string reply = line.substr(6);
+            const size_t space = reply.find(' ');
+            const std::string name = reply.substr(0, space);
+            if (!this->variables.count(name))
             {
-                vars[name] = sp == std::string::npos ? "" : rest.substr(sp + 1);
+                this->variables[name] =
+                    space == std::string::npos ? "" : reply.substr(space + 1);
             }
         }
-        vars["DevSta"] = "3";
+        this->variables["DevSta"] = "3";
     }
 
     void serve()
     {
-        while (running)
+        while (this->running)
         {
-            pollfd p{listen_fd, POLLIN, 0};
-            if (::poll(&p, 1, 50) <= 0)
+            pollfd readable{this->listen_fd, POLLIN, 0};
+            if (::poll(&readable, 1, 50) <= 0)
             {
                 continue;
             }
-            const int fd = ::accept(listen_fd, nullptr, nullptr);
-            if (fd < 0)
+            const int client_fd = ::accept(this->listen_fd, nullptr, nullptr);
+            if (client_fd < 0)
             {
                 continue;
             }
-            int on = 1;  // events and replies are separate small sends
-            ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
-            session(fd);
-            ::close(fd);
+            const int enable =
+                1;  // events and replies are separate small sends
+            ::setsockopt(
+                client_fd,
+                IPPROTO_TCP,
+                TCP_NODELAY,
+                &enable,
+                sizeof(enable));
+            this->session(client_fd);
+            ::close(client_fd);
         }
     }
 
-    void sendTelegram(int fd, const std::string& text)
+    void sendTelegram(int client_fd, const std::string& text)
     {
         const std::string frame = "\x02" + text + "\x03";
-        if (byte_by_byte)
+        if (!this->byte_by_byte)
         {
-            for (char c : frame)
-            {
-                ::send(fd, &c, 1, MSG_NOSIGNAL);
-            }
+            ::send(client_fd, frame.data(), frame.size(), MSG_NOSIGNAL);
+            return;
         }
-        else
+        for (const char byte : frame)
         {
-            ::send(fd, frame.data(), frame.size(), MSG_NOSIGNAL);
+            ::send(client_fd, &byte, 1, MSG_NOSIGNAL);
         }
     }
 
-    void session(int fd)
+    /* One client connection: frames requests and answers them. */
+    void session(int client_fd)
     {
         bool logged_in = false;
         bool stale_sent = false;
-        size_t n_requests = 0;
-        std::string rx;
-        while (running)
+        size_t requests_received = 0;
+        std::string received;
+        while (this->running)
         {
-            pollfd p{fd, POLLIN, 0};
-            if (::poll(&p, 1, 50) <= 0)
+            pollfd readable{client_fd, POLLIN, 0};
+            if (::poll(&readable, 1, 50) <= 0)
             {
                 continue;
             }
-            char buf[1024];
-            const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
-            if (n <= 0)
+            char chunk[1024];
+            const ssize_t chunk_size =
+                ::recv(client_fd, chunk, sizeof(chunk), 0);
+            if (chunk_size <= 0)
             {
                 return;
             }
-            rx.append(buf, static_cast<size_t>(n));
-            size_t etx;
-            while ((etx = rx.find('\x03')) != std::string::npos)
+            received.append(chunk, static_cast<size_t>(chunk_size));
+
+            size_t end;
+            while ((end = received.find('\x03')) != std::string::npos)
             {
-                const size_t stx = rx.find('\x02');
-                const std::string req = rx.substr(stx + 1, etx - stx - 1);
-                rx.erase(0, etx + 1);
+                const size_t start = received.find('\x02');
+                const std::string request =
+                    received.substr(start + 1, end - start - 1);
+                received.erase(0, end + 1);
                 {
-                    std::lock_guard l(mtx);
-                    log.push_back({req, logged_in});
+                    std::lock_guard lock{this->state_mutex};
+                    this->request_log.push_back({request, logged_in});
                 }
-                if (++n_requests > close_after)
+                if (++requests_received > this->close_after)
                 {
                     return;
                 }
-                if (no_reply.count(req))
+                if (this->no_reply.count(request))
                 {
                     continue;
                 }
-                for (const auto& e : events_before_reply)
+                for (const std::string& event : this->events_before_reply)
                 {
-                    sendTelegram(fd, e);
+                    this->sendTelegram(client_fd, event);
                 }
-                if (stale_reply_first && !stale_sent)
+                if (this->stale_reply_first && !stale_sent)
                 {
-                    sendTelegram(fd, "sRA Stale 1");
+                    this->sendTelegram(client_fd, "sRA Stale 1");
                     stale_sent = true;
                 }
-                sendTelegram(fd, handle(req, logged_in));
+                this->sendTelegram(client_fd, this->handle(request, logged_in));
             }
         }
     }
 
-    std::string handle(const std::string& req, bool& logged_in)
+    std::string handle(const std::string& request, bool& logged_in)
     {
-        std::istringstream in(req);
-        std::string type, name, args;
+        std::istringstream in(request);
+        std::string type;
+        std::string name;
+        std::string arguments;
         in >> type >> name;
-        std::getline(in, args);
-        if (!args.empty() && args[0] == ' ')
+        std::getline(in, arguments);
+        if (!arguments.empty() && arguments[0] == ' ')
         {
-            args.erase(0, 1);
+            arguments.erase(0, 1);
         }
 
-        std::lock_guard l(mtx);
+        std::lock_guard lock{this->state_mutex};
         if (type == "sMN")
         {
-            if (name == "SetAccessMode")
-            {
-                logged_in = (args == "3 " + password);
-                return std::string("sAN SetAccessMode ") +
-                       (logged_in ? "1" : "0");
-            }
-            if (name == "Run")
-            {
-                logged_in = false;
-                return "sAN Run 1";
-            }
-            if (!logged_in)
-            {
-                return "sFA 1";
-            }
-            if (name == "LMCstartmeas")
-            {
-                return "sAN LMCstartmeas 0";
-            }
-            if (name == "mCLsetscancfglist")
-            {
-                interlaced = (args == "1");
-                return "sAN mCLsetscancfglist 0";
-            }
-            return "sFA 2";
+            return this->handleMethod(name, arguments, logged_in);
         }
         if (type == "sRN")
         {
-            if (!vars.count(name))
-            {
-                return "sFA 3";
-            }
-            if (name == "DevSta" && logged_in)
-            {
-                return "sRA DevSta 2";  // service mode while logged in
-            }
-            return "sRA " + name + (vars[name].empty() ? "" : " " + vars[name]);
+            return this->handleRead(name, logged_in);
         }
         if (type == "sWN")
         {
-            if (!vars.count(name))
-            {
-                return "sFA 3";
-            }
-            if (!logged_in)
-            {
-                return "sFA A";
-            }
-            if (fail_writes.count(name))
-            {
-                char buf[8];
-                std::snprintf(buf, sizeof(buf), "%X", fail_writes[name]);
-                return std::string("sFA ") + buf;
-            }
-            if (!ignore_writes.count(name))
-            {
-                vars[name] = toDeviceFormat(args);
-            }
-            return "sWA " + name;
+            return this->handleWrite(name, arguments, logged_in);
         }
         return "sFA C";
     }
 
-    int listen_fd = -1;
-    uint16_t listen_port = 0;
-    std::thread server;
-    std::atomic<bool> running{true};
-    std::mutex mtx;
-    std::map<std::string, std::string> vars;
-    std::vector<Request> log;
+    std::string handleMethod(
+        const std::string& name,
+        const std::string& arguments,
+        bool& logged_in)
+    {
+        if (name == "SetAccessMode")
+        {
+            logged_in = (arguments == "3 " + this->password);
+            return std::string("sAN SetAccessMode ") + (logged_in ? "1" : "0");
+        }
+        if (name == "Run")
+        {
+            logged_in = false;
+            return "sAN Run 1";
+        }
+        if (!logged_in)
+        {
+            return "sFA 1";
+        }
+        if (name == "LMCstartmeas")
+        {
+            return "sAN LMCstartmeas 0";
+        }
+        if (name == "mCLsetscancfglist")
+        {
+            this->interlaced = (arguments == "1");
+            return "sAN mCLsetscancfglist 0";
+        }
+        return "sFA 2";
+    }
 
-public:
-    bool interlaced = false;
+    std::string handleRead(const std::string& name, bool logged_in)
+    {
+        if (!this->variables.count(name))
+        {
+            return "sFA 3";
+        }
+        if (name == "DevSta" && logged_in)
+        {
+            return "sRA DevSta 2";  // service mode while logged in
+        }
+        const std::string& value = this->variables[name];
+        return "sRA " + name + (value.empty() ? "" : " " + value);
+    }
+
+    std::string handleWrite(
+        const std::string& name,
+        const std::string& arguments,
+        bool logged_in)
+    {
+        if (!this->variables.count(name))
+        {
+            return "sFA 3";
+        }
+        if (!logged_in)
+        {
+            return "sFA A";
+        }
+        if (this->fail_writes.count(name))
+        {
+            char code[8];
+            std::snprintf(code, sizeof(code), "%X", this->fail_writes[name]);
+            return std::string("sFA ") + code;
+        }
+        if (!this->ignore_writes.count(name))
+        {
+            this->variables[name] = toDeviceFormat(arguments);
+        }
+        return "sWA " + name;
+    }
+
+protected:
+    int listen_fd{-1};
+    uint16_t listen_port{0};
+    std::thread server_thread;
+    std::atomic<bool> running{true};
+
+    std::mutex state_mutex;
+    std::map<std::string, std::string> variables;  // guarded by state_mutex
+    std::vector<Request> request_log;              // guarded by state_mutex
 };
 
 }  // namespace ms_test

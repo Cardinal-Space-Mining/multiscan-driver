@@ -45,16 +45,18 @@ namespace multiscan
 
 namespace
 {
-constexpr size_t N_FIELDS = static_cast<size_t>(Field::COUNT);
 
-struct FieldInfo
+constexpr size_t NUM_FIELDS = static_cast<size_t>(Field::COUNT);
+
+struct FieldFormat
 {
     const char* name;
-    uint32_t bytes;
+    uint32_t size_bytes;
     uint8_t datatype;
 };
 
-constexpr std::array<FieldInfo, N_FIELDS> FIELD_INFO = {
+// in the order of Field
+constexpr std::array<FieldFormat, NUM_FIELDS> FIELD_FORMATS = {
     {
      {"x", 4, POINT_FIELD_FLOAT32},
      {"y", 4, POINT_FIELD_FLOAT32},
@@ -71,73 +73,79 @@ constexpr std::array<FieldInfo, N_FIELDS> FIELD_INFO = {
      {"artifact", 4, POINT_FIELD_FLOAT32},
      }
 };
+
 }  // namespace
 
 
-PointLayout::PointLayout(const std::array<bool, N_FIELDS>& enabled)
+PointLayout::PointLayout(const FieldFlags& enabled)
 {
-    offsets.fill(ABSENT);
-    uint32_t off = 0;
-    for (size_t i = 0; i < N_FIELDS; i++)
+    this->field_offsets.fill(ABSENT);
+    uint32_t offset = 0;
+    for (size_t i = 0; i < NUM_FIELDS; i++)
     {
         if (!enabled[i])
         {
             continue;
         }
-        offsets[i] = static_cast<int32_t>(off);
+        this->field_offsets[i] = static_cast<int32_t>(offset);
         if (static_cast<Field>(i) == Field::Time)
         {
-            descriptors.push_back({"tl", off, POINT_FIELD_UINT32});
-            descriptors.push_back({"th", off + 4, POINT_FIELD_UINT32});
+            this->field_descriptors.push_back(
+                {"tl", offset, POINT_FIELD_UINT32});
+            this->field_descriptors.push_back(
+                {"th", offset + 4, POINT_FIELD_UINT32});
         }
         else
         {
-            descriptors.push_back(
-                {FIELD_INFO[i].name, off, FIELD_INFO[i].datatype});
+            this->field_descriptors.push_back(
+                {FIELD_FORMATS[i].name, offset, FIELD_FORMATS[i].datatype});
         }
-        off += FIELD_INFO[i].bytes;
+        offset += FIELD_FORMATS[i].size_bytes;
     }
-    point_step = off;
+    this->point_step = offset;
 }
 
 PointLayout PointLayout::all()
 {
-    std::array<bool, N_FIELDS> e;
-    e.fill(true);
-    e[static_cast<size_t>(Field::Artifact)] = false;
-    return PointLayout{e};
+    FieldFlags enabled;
+    enabled.fill(true);
+    enabled[static_cast<size_t>(Field::Artifact)] = false;
+    return PointLayout{enabled};
 }
 
 std::optional<PointLayout> PointLayout::fromNames(
     const std::vector<std::string>& names,
     std::string& error)
 {
-    std::array<bool, N_FIELDS> e{};
-    for (const std::string& n : names)
+    FieldFlags enabled{};
+    for (const std::string& requested : names)
     {
-        const std::string name =
-            (n == "tl" || n == "th") ? std::string("time") : n;
+        const std::string name = (requested == "tl" || requested == "th")
+                                     ? std::string("time")
+                                     : requested;
         bool found = false;
-        for (size_t i = 0; i < N_FIELDS; i++)
+        for (size_t i = 0; i < NUM_FIELDS; i++)
         {
-            if (name == FIELD_INFO[i].name)
+            if (name == FIELD_FORMATS[i].name)
             {
-                e[i] = found = true;
+                enabled[i] = found = true;
                 break;
             }
         }
         if (!found)
         {
-            error = "unknown point field '" + n + "'";
+            error = "unknown point field '" + requested + "'";
             return std::nullopt;
         }
     }
-    if (!e[0] || !e[1] || !e[2])
+    if (!enabled[static_cast<size_t>(Field::X)] ||
+        !enabled[static_cast<size_t>(Field::Y)] ||
+        !enabled[static_cast<size_t>(Field::Z)])
     {
         error = "point fields must include x, y and z";
         return std::nullopt;
     }
-    return PointLayout{e};
+    return PointLayout{enabled};
 }
 
 }  // namespace multiscan
