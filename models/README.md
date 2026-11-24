@@ -18,16 +18,14 @@ ghosts too.
 
 ## Where they come from
 
-The models are trained in ghost-ml-ws (`annotator_app`), which labels
-recorded bags and writes `artifact_<variant>.model.txt` next to every model
-it trains. The format is described in its `export_model.py`.
+The models are trained with [ghost-ml](https://github.com/S1ink/ghost-ml),
+a separate project (not part of the LANCE workspace). Its `annotator_app`
+labels recorded bags and writes `artifact_<variant>.model.txt` next to every
+model it trains. The format is described in its `export_model.py`. You only
+need ghost-ml to train new models, not to use these.
 
-To replace these models with newly trained ones, publish them from
-ghost-ml-ws:
-
-```bash
-python3 src/annotator_app/publish_model.py --driver <this repository>
-```
-
-Then rebuild the driver and run its tests (`test_ghost_filter` checks that
-the defaults load and fit the sensor). Finally, commit the models here.
+To replace these models with newly trained ones, publish them from ghost-ml:
+use "Publish to driver" in the app, or run
+`annotator_app/publish_model.py --driver <this repository>`. Then rebuild
+the driver and run its tests (`test_ghost_filter` checks that the defaults
+load and fit the sensor). Finally, commit the models here.

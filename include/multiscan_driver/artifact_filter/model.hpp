@@ -37,15 +37,16 @@
 *                                                                              *
 *******************************************************************************/
 
-/*  Artifact (ghost point) classifier: the model file written by ghost-ml-ws
+/*  Artifact (ghost point) classifier: the model file written by ghost-ml
  *  (annotator_app, export_model.py) and the trees it carries.
  *
  *  The file holds the trees and every setting needed to turn a scan into the
  *  classifier's inputs, so nothing here is specific to one lidar. See
  *  export_model.py for the format (version 1).
  *
- *  Header only, C++ standard library only (no ROS), so ghost-ml-ws builds its
- *  tools against this same code.
+ *  Header only, C++ standard library only (no ROS), so ghost-ml builds its
+ *  tools against this same code. ghost-ml (https://github.com/S1ink/ghost-ml)
+ *  is a separate project, not part of the LANCE workspace.
  */
 #pragma once
 
@@ -82,7 +83,7 @@ public:
 public:
     /* Reads a model file. Throws std::runtime_error when the file can't be
      * read, is damaged, or doesn't fit the feature code (artifact_filter
-     * .hpp out of step with ghost-ml-ws artifact_features.py), or when the
+     * .hpp out of step with ghost-ml artifact_features.py), or when the
      * model looks at later scans, which a live filter doesn't have. */
     static Model load(const std::string& path);
 
@@ -269,7 +270,7 @@ inline Model Model::load(const std::string& path)
         detail::failModel(
             path,
             std::string("not a '") + FILE_HEADER +
-                "' file (export it with ghost-ml-ws annotator_app)");
+                "' file (export it with ghost-ml annotator_app)");
     }
 
     Model model;
@@ -539,7 +540,7 @@ inline void Model::validate(const Model& model)
             " features but this code produces " +
             std::to_string(model.expectedFeatureCount()) +
             " for its settings: multiscan_driver artifact_filter is out of "
-            "step with ghost-ml-ws annotator_app/artifact_features.py");
+            "step with ghost-ml annotator_app/artifact_features.py");
     }
 }
 

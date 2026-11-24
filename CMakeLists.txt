@@ -110,7 +110,7 @@ install(PROGRAMS
     "tools/ms_geometry.py"
     DESTINATION lib/${PROJECT_NAME} )
 
-# multiscan_spec.hpp (net_adapter's codec) and artifact_filter/ (ghost-ml-ws
+# multiscan_spec.hpp (net_adapter's codec) and artifact_filter/ (ghost-ml
 # builds its tools against the driver's classifier)
 install(DIRECTORY include/
     DESTINATION include )

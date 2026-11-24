@@ -44,26 +44,31 @@ colcon test-result --test-result-base build/multiscan_driver --verbose
   `ROS_DOMAIN_ID=77 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`.
 - Say clearly what could only be verified on hardware.
 
-## The ghost filter and ghost-ml-ws
+## The ghost filter and ghost-ml
 
+- The models are trained with ghost-ml (https://github.com/S1ink/ghost-ml),
+  a personal project for labelling bags and training. It is **not** part of
+  the LANCE workspace, and most checkouts won't have it. Don't assume it is
+  present. Nothing here builds or runs without it.
 - The classifier, `include/multiscan_driver/artifact_filter/` (header only,
   standard library only), is owned here and installed with the package.
-  ghost-ml-ws (the labelling and training tools) builds against it. The
-  dependency runs one way: ghost-ml-ws -> driver.
-- It mirrors ghost-ml-ws's Python feature code (`artifact_features.py`,
-  `scan_grid.py`) exactly. After changing it, run ghost-ml-ws's
-  `artifact_filter_check` against a check file. Its results must stay
+  ghost-ml includes this driver as a submodule and builds against it. The
+  dependency runs one way: ghost-ml -> driver.
+- It mirrors ghost-ml's Python feature code (`artifact_features.py`,
+  `scan_grid.py`) exactly. After changing it, run ghost-ml's
+  `artifact_filter_check` against a check file if you have ghost-ml.
+  Otherwise, say that it still has to be run. Its results must stay
   identical, not just close.
-- The default models in `models/` are published from ghost-ml-ws
-  (`annotator_app/publish_model.py`). Don't edit them by hand.
+- The default models in `models/` are published from ghost-ml. Don't edit
+  them by hand.
 - `test/data/ghost_*_30trees.model.txt` are cut-down models for the tests.
   They exercise the code, not the classification.
 
 ## Code style
 
 The reference is the LANCE package (`src/lance/src` of the robot
-workspace): code should read like it. These rules apply to all C++ here
-and in ghost-ml-ws.
+workspace): code should read like it. The LANCE workspace's `AGENTS.md`
+has the same rules, and they apply here too.
 
 ### Formatting
 
@@ -98,7 +103,6 @@ and in ghost-ml-ws.
   - variables and members: `snake_case`;
   - constants: `UPPER_SNAKE_CASE`;
   - enums: `enum class` with `PascalCase` values.
-- Name a lambda like a function (`readList`, `isFloat32`).
 
 ### Functions
 
@@ -109,6 +113,22 @@ and in ghost-ml-ws.
 - If a function stays long, label its parts with `// --- Step ---` comments.
 - Structure control flow plainly: early returns instead of deep nesting, and
   no `goto`.
+
+### Macros over lambdas
+
+- For a small piece of code repeated inside a function or file, prefer a
+  macro to a local lambda: declaring parameters, filling fields, repeated
+  checks with an early `return` (`EXIT_IF_INSUFFICIENT_SIZE`), or anything
+  that needs a name as a string (`#name`). The LANCE package does this
+  (`INIT_PARAM`, `ADD_MARKER`, `SET_BOUNDS`).
+- Name macros in `UPPER_SNAKE_CASE`. Define them just above their first
+  use, and `#undef` them when they are no longer needed. Wrap a multi-line
+  body in braces, and put macro arguments in parentheses inside the body.
+- Use a real function when the code is longer, needs its own types or
+  locals, or is called from more than one file.
+- Lambdas are still right where a callable is required: callbacks, thread
+  bodies and sort comparators. Name a stored lambda like a function
+  (`readList`, `isFloat32`).
 
 ### Classes and headers
 

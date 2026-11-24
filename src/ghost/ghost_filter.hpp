@@ -37,11 +37,11 @@
 *                                                                              *
 *******************************************************************************/
 
-/*  Ghost point (artifact) filter: the classifier trained in ghost-ml-ws, run
+/*  Ghost point (artifact) filter: the classifier trained in ghost-ml, run
  *  on every frame as its segments arrive.
  *
  *  - The classifier itself is include/multiscan_driver/artifact_filter/
- *    (shared with ghost-ml-ws, which builds its tools against it).
+ *    (shared with ghost-ml, which builds its tools against it).
  *  - Each accepted segment is decoded again into the fields the classifier
  *    needs (same decoder, so the points are the same and in the same order
  *    as in the published frame) and handed to it. A grid cell is classified

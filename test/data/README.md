@@ -20,5 +20,5 @@ Other files:
 | File | Contents |
 |---|---|
 | `sopas_transcript_fw2.3.txt` | CoLa A requests and replies recorded from the same sensor (settings, status, time sync); the fake sensor in `test/support/fake_sensor.hpp` starts from its values |
-| `ghost_full_30trees.model.txt`, `ghost_xyz_30trees.model.txt` | The first 30 of 600 trees of the ghost-ml-ws realtime models (trained 2026-11-18), with two made-up early exit checkpoints, for `test_ghost_filter`. They exercise the code, not the classification: use the real models to filter |
+| `ghost_full_30trees.model.txt`, `ghost_xyz_30trees.model.txt` | The first 30 of 600 trees of the ghost-ml realtime models (trained 2026-11-18), with two made-up early exit checkpoints, for `test_ghost_filter`. They exercise the code, not the classification: use the real models to filter |
 | `golden_clouds.txt` | Size and CRC-32 of every cloud the old sick_scan_xd-based driver published for the captures and the synthetic configurations in `test_decoder.cpp`, recorded before that code was removed. Regenerate only for intentional output changes: `MS_UPDATE_GOLDEN=1 build/multiscan_driver/test_decoder` |

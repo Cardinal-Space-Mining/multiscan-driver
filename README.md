@@ -92,8 +92,10 @@ default and units. In short:
 
 ## Ghost filter
 
-`ghost_filter.*` runs the ghost point (artifact) classifier trained in
-ghost-ml-ws (`annotator_app`) on every frame. `mode: drop` removes the points
+`ghost_filter.*` runs a ghost point (artifact) classifier on every frame.
+The models were trained with [ghost-ml](https://github.com/S1ink/ghost-ml),
+a separate project (not part of the LANCE workspace) for labelling recorded
+bags and training on them. Using the filter doesn't need it. `mode: drop` removes the points
 it flags, so clouds get smaller; `mode: annotate` keeps all of them and adds
 the field `artifact` with each point's probability.
 
@@ -127,10 +129,10 @@ layers are not part of its grid and their points are never dropped. With
 `sensor.interlaced` the filter doesn't run.
 
 The classifier is `include/multiscan_driver/artifact_filter/` (header only,
-standard library only). The driver owns it, and ghost-ml-ws builds its tools
-against it, including the check against the Python feature code. After
-changing it, run that check in ghost-ml-ws (`artifact_filter_check`; see
-its README).
+standard library only). The driver owns it, and ghost-ml builds its tools
+against it, including a check against its Python feature code. After
+changing it, run that check (`artifact_filter_check` in ghost-ml; see its
+README), or ask its maintainer to.
 
 `bench_ghost_filter [MODEL] [CAPTURE] [--paced]` measures the filter on a
 capture (by default the installed full model on `test/data/live_1echo`) and
@@ -207,7 +209,7 @@ src/node/           the ROS node: setup and publishing (multiscan_node), the
                     /diagnostics (diagnostics)
 src/main.cpp        node entry point
 include/multiscan_driver/multiscan_spec.hpp   dense-buffer geometry used by net_adapter's codec
-include/multiscan_driver/artifact_filter/     the ghost point classifier (shared with ghost-ml-ws)
+include/multiscan_driver/artifact_filter/     the ghost point classifier (shared with ghost-ml)
 models/             default ghost filter models
 ```
 

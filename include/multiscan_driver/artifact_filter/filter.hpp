@@ -37,7 +37,7 @@
 *                                                                              *
 *******************************************************************************/
 
-/*  Artifact (ghost point) filter: runs the classifier trained in ghost-ml-ws
+/*  Artifact (ghost point) filter: runs the classifier trained in ghost-ml
  *  on live scans.
  *
  *      artifact_filter::Filter filter{artifact_filter::Model::load(path)};
@@ -49,9 +49,9 @@
  *  classifyReady, finish; see Filter::begin): cells are classified as soon
  *  as their inputs are complete, so little work is left when the scan ends.
  *
- *  This file mirrors ghost-ml-ws annotator_app/scan_grid.py (points -> grid
+ *  This file mirrors ghost-ml annotator_app/scan_grid.py (points -> grid
  *  cells) and annotator_app/artifact_features.py (grid -> features). The two
- *  must stay in step: after changing either, run ghost-ml-ws
+ *  must stay in step: after changing either, run ghost-ml
  *  artifact_filter_check against a check file from export_model.py.
  *
  *  Header only, C++ standard library only (OpenMP is used when the compiler
