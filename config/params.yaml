@@ -43,6 +43,20 @@
       # segments a narrowed output range omits are learned and not counted
       publish_partial_frames: true
 
+    # Ghost point (artifact) classifier from ghost-ml-ws, run as the segments
+    # of a frame arrive, on one thread of its own. It adds ~5 ms to every
+    # frame on a desktop core (full model, early exit); /diagnostics "Ghost
+    # filter" shows the delay and work per frame on this machine. Not with
+    # sensor.interlaced. Points of the high-resolution layers are left alone.
+    ghost_filter:
+      enabled: false
+      model_file: ""            # artifact_full.model.txt (exported by annotator_app)
+      fallback_model_file: ""   # used if model_file can't be loaded, e.g. artifact_xyz.model.txt
+      mode: "drop"              # drop: remove flagged points | annotate: add field "artifact"
+                                #   (probability, -1 = not classified) and keep every point
+      threshold: -1.0           # flag from this probability; < 0 = the model's own (0.3)
+      early_exit: true          # needed on one core: without it a frame takes ~50 ms
+
     # Applied on every connect and read back to verify; never saved on the
     # sensor (a power cycle restores its stored configuration). With apply
     # false the driver only compares and warns. Invalid values disable apply.

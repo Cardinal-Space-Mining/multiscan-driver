@@ -68,6 +68,7 @@
 #include "compact/decoder.hpp"
 #include "compact/point_layout.hpp"
 #include "frame_assembler.hpp"
+#include "ghost/ghost_filter.hpp"
 #include "net/udp_receiver.hpp"
 
 #include "sopas/cola_client.hpp"
@@ -112,6 +113,7 @@ protected:
     void handleDatagram(std::span<const uint8_t> datagram, uint64_t recv_ns);
     void handleImu(std::span<const uint8_t> datagram, uint64_t recv_ns);
     void publishFrame(multiscan::FrameAssembler::Frame& frame);
+    void initGhostFilter();
     void reportStreamHealth();
     void runReceiver();
     bool pollSensorStatus();
@@ -165,6 +167,16 @@ private:
         std::array<double, 3> imu_angular_velocity_cov{};
         std::array<double, 3> imu_linear_acceleration_cov{};
         double status_period_s = 2.;
+        struct
+        {
+            bool enabled = false;
+            std::string model_file;
+            std::string fallback_model_file;  // used if model_file fails
+            multiscan::GhostFilter::Mode mode =
+                multiscan::GhostFilter::Mode::Drop;
+            double threshold = -1.;  // < 0: the model's
+            bool early_exit = true;
+        } ghost;
     } config;
 
     /* What /diagnostics reports. Written by the receive thread, read by the
@@ -189,6 +201,8 @@ private:
         uint64_t imu_published = 0;
         uint32_t expected_mask = 0;
 
+        multiscan::GhostFilterWorker::Stats ghost;
+
         bool clock_valid = false;
         int64_t clock_offset_ns = 0;
         double clock_drift = 0.;
@@ -212,7 +226,7 @@ private:
     multiscan::ClockEstimator clock;
     sopas::SensorStatus last_status;
     bool have_last_status = false;
-    uint64_t frames_published = 0;
+    std::atomic<uint64_t> frames_published = 0;  // also the filter thread
     uint64_t imu_published = 0;
 
     std::mutex diag_mtx;
@@ -222,6 +236,12 @@ private:
 
     std::thread recv_thread;
     std::atomic<bool> is_running = true;
+
+    // ghost filter (ghost_filter.enabled); publishes frames on its own thread.
+    // Declared after the publishers so it is destroyed (stopped) first.
+    std::unique_ptr<multiscan::GhostFilterWorker> ghost;
+    std::string ghost_error;  // why it isn't running although enabled
+    std::string ghost_model;  // description for /diagnostics
 
 #if PUBLISH_PROCESS_METRICS
     SharedPub<ProcessStatsMsg> proc_stats_pub;
@@ -310,6 +330,61 @@ MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
         "output.publish_partial_frames",
         this->config.publish_partial_frames,
         true);
+
+    util::declare_param(
+        this,
+        "ghost_filter.enabled",
+        this->config.ghost.enabled,
+        false);
+    util::declare_param(
+        this,
+        "ghost_filter.model_file",
+        this->config.ghost.model_file,
+        std::string{});
+    util::declare_param(
+        this,
+        "ghost_filter.fallback_model_file",
+        this->config.ghost.fallback_model_file,
+        std::string{});
+    {
+        std::string mode = "drop";
+        util::declare_param(
+            this,
+            "ghost_filter.mode",
+            mode,
+            std::string{"drop"});
+        if (mode == "annotate")
+        {
+            this->config.ghost.mode = multiscan::GhostFilter::Mode::Annotate;
+        }
+        else if (mode != "drop")
+        {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: ghost_filter.mode must be drop or annotate "
+                "(got '%s'); using drop.",
+                mode.c_str());
+        }
+    }
+    util::declare_param(
+        this,
+        "ghost_filter.threshold",
+        this->config.ghost.threshold,
+        -1.);
+    util::declare_param(
+        this,
+        "ghost_filter.early_exit",
+        this->config.ghost.early_exit,
+        true);
+    if (this->config.ghost.enabled &&
+        this->config.ghost.mode == multiscan::GhostFilter::Mode::Annotate &&
+        std::find(
+            this->config.point_fields.begin(),
+            this->config.point_fields.end(),
+            "artifact") == this->config.point_fields.end())
+    {
+        this->config.point_fields.push_back("artifact");
+    }
 
     {
         std::string source = "estimated";
@@ -416,6 +491,7 @@ MultiscanNode::MultiscanNode(bool autostart) : Node("multiscan_driver")
             .publish_partial_frames = this->config.publish_partial_frames},
         [this](const compact::ScanInfo& info, uint64_t recv_ns)
         { return this->clockOffset(info.transmit_time_us, recv_ns); });
+    this->initGhostFilter();
 
     this->scan_pub = this->create_publisher<PointCloudMsg>(
         "lidar_scan",
@@ -906,6 +982,109 @@ void MultiscanNode::handleImu(
     this->imu_published++;
 }
 
+void MultiscanNode::initGhostFilter()
+{
+    const auto& g = this->config.ghost;
+    if (!g.enabled)
+    {
+        return;
+    }
+    auto fail = [this](const std::string& why)
+    {
+        this->ghost_error = why;
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "[MULTISCAN DRIVER]: Ghost filter disabled: %s",
+            why.c_str());
+    };
+    if (this->config.sensor.interlaced)
+    {
+        fail(
+            "sensor.interlaced is on; the model assumes the same beam "
+            "directions in every frame");
+        return;
+    }
+
+    std::unique_ptr<multiscan::GhostFilter> filter;
+    std::string errors;
+    for (const std::string& path : {g.model_file, g.fallback_model_file})
+    {
+        if (path.empty())
+        {
+            continue;
+        }
+        try
+        {
+            filter = std::make_unique<multiscan::GhostFilter>(
+                artifact_filter::Model::load(path),
+                multiscan::GhostFilter::Config{
+                    .mode = g.mode,
+                    .threshold = g.threshold,
+                    .early_exit = g.early_exit,
+                    .echo_selection = static_cast<uint32_t>(
+                        std::max(0, this->config.echo_selection))});
+            this->ghost_model = path;
+            break;
+        }
+        catch (const std::exception& e)
+        {
+            errors += (errors.empty() ? "" : "; ") + std::string(e.what());
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[MULTISCAN DRIVER]: Ghost filter: cannot use %s: %s",
+                path.c_str(),
+                e.what());
+        }
+    }
+    if (!filter)
+    {
+        fail(errors.empty() ? "ghost_filter.model_file is not set" : errors);
+        return;
+    }
+
+    const artifact_filter::Model& m = filter->model();
+    RCLCPP_INFO(
+        this->get_logger(),
+        "[MULTISCAN DRIVER]: Ghost filter: %s model (%s, %zu trees, trained %s) from %s; "
+        "%s points from probability %.2f%s.",
+        m.variant.c_str(),
+        m.use_intensity ? "range and intensity" : "range only",
+        m.tree_root.size(),
+        m.trained.c_str(),
+        this->ghost_model.c_str(),
+        g.mode == multiscan::GhostFilter::Mode::Drop ? "dropping"
+                                                     : "annotating",
+        filter->threshold(),
+        g.mode == multiscan::GhostFilter::Mode::Drop
+            ? ""
+            : " (field 'artifact': probability, -1 = not classified)");
+    if (!g.early_exit || m.exit_after.empty())
+    {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "[MULTISCAN DRIVER]: Ghost filter runs without early exit (%s): "
+            "on one core a frame can take longer than the 50 ms scan period, "
+            "and frames are then published unfiltered.",
+            g.early_exit ? "the model has no checkpoints"
+                         : "ghost_filter.early_exit is false");
+    }
+    this->ghost_model = m.variant + " (" + this->ghost_model + ")";
+
+    this->ghost = std::make_unique<multiscan::GhostFilterWorker>(
+        std::move(filter),
+        this->decoder->layout(),
+        [this](
+            multiscan::FrameAssembler::Frame& f,
+            const multiscan::GhostFilter::Result&) { this->publishFrame(f); });
+    this->assembler->setSegmentHook(
+        [this](
+            const compact::ScanInfo& info,
+            std::span<const uint8_t> datagram,
+            uint64_t frame_number,
+            uint32_t first_point)
+        { this->ghost->segment(info, datagram, frame_number, first_point); });
+}
+
 void MultiscanNode::publishFrame(multiscan::FrameAssembler::Frame& frame)
 {
     const uint32_t step = this->decoder->layout().pointStep();
@@ -1050,7 +1229,7 @@ void MultiscanNode::updateDiagnosticsSnapshot(bool streaming)
     }
     this->diag.stream = this->assembler->stats();
     this->diag.expected_mask = this->assembler->expectedMask();
-    this->diag.frames_published = this->frames_published;
+    this->diag.frames_published = this->frames_published.load();
     this->diag.imu_published = this->imu_published;
     this->diag.clock_valid = this->clock.valid();
     this->diag.clock_offset_ns = this->clock.offsetNs(now_ns);
@@ -1283,6 +1462,98 @@ void MultiscanNode::publishDiagnostics()
         msg->status.push_back(std::move(st));
     }
 
+    // --- ghost filter
+    if (this->config.ghost.enabled)
+    {
+        if (this->ghost)
+        {
+            d.ghost = this->ghost->takeStats();
+        }
+        const auto& gs = d.ghost;
+        const auto& gp = p.ghost;
+        Status st = make("Ghost filter", Status::OK, "");
+        if (!this->ghost)
+        {
+            st.level = Status::ERROR;
+            st.message = "not running: " + this->ghost_error;
+        }
+        else
+        {
+            const multiscan::GhostFilter& gf = this->ghost->filter();
+            const uint64_t unfiltered =
+                gs.frames_unfiltered - gp.frames_unfiltered;
+            const uint64_t overloaded =
+                gs.frames_overloaded - gp.frames_overloaded;
+            const double frames = static_cast<double>(gs.window_frames);
+            const double flagged_per_frame =
+                gs.window_frames
+                    ? (gs.points_flagged - gp.points_flagged) / frames
+                    : 0.;
+            const double delay_ms =
+                gs.window_frames ? gs.window_delay_sum_ns * 1e-6 / frames : 0.;
+            st.message =
+                fmt("%.1f points flagged per frame", flagged_per_frame) +
+                fmt(", +%.1f ms", delay_ms);
+            if (overloaded)
+            {
+                st.level = Status::WARN;
+                st.message += ", too slow: " + std::to_string(overloaded) +
+                              " frames published unfiltered";
+            }
+            else if (unfiltered)
+            {
+                st.level = Status::WARN;
+                st.message +=
+                    ", " + std::to_string(unfiltered) + " frames unfiltered";
+            }
+            else if (!gs.window_frames && d.streaming)
+            {
+                st.level = Status::WARN;
+                st.message = "no frames filtered";
+            }
+            kv(st, "Model", this->ghost_model);
+            kv(st,
+               "Mode",
+               gf.config().mode == multiscan::GhostFilter::Mode::Drop
+                   ? "drop"
+                   : "annotate");
+            kv(st, "Threshold", fmt("%.3f", gf.threshold()));
+            kv(st,
+               "Early exit",
+               gf.model().exit_after.empty()
+                   ? "no (model has no checkpoints)"
+                   : (gf.config().early_exit ? "yes" : "no"));
+            kv(st,
+               "Frames filtered (last period)",
+               std::to_string(gs.window_frames));
+            kv(st, "Points flagged per frame", fmt("%.1f", flagged_per_frame));
+            kv(st,
+               "Points classified per frame",
+               fmt("%.0f",
+                   gs.window_frames
+                       ? (gs.points_classified - gp.points_classified) / frames
+                       : 0.));
+            kv(st, "Delay added, mean [ms]", fmt("%.2f", delay_ms));
+            kv(st,
+               "Delay added, max [ms]",
+               fmt("%.2f", gs.window_delay_max_ns * 1e-6));
+            kv(st,
+               "Work per frame, mean [ms]",
+               fmt("%.2f",
+                   gs.window_frames ? gs.window_work_sum_ns * 1e-6 / frames
+                                    : 0.));
+            kv(st,
+               "Work per frame, max [ms]",
+               fmt("%.2f", gs.window_work_max_ns * 1e-6));
+            kv(st, "Frames filtered", std::to_string(gs.frames_filtered));
+            kv(st, "Frames unfiltered", std::to_string(gs.frames_unfiltered));
+            kv(st,
+               "Frames unfiltered (too slow)",
+               std::to_string(gs.frames_overloaded));
+        }
+        msg->status.push_back(std::move(st));
+    }
+
     // --- configuration
     {
         Status st = make("Configuration", Status::OK, "");
@@ -1388,6 +1659,10 @@ void MultiscanNode::runReceiver()
             auto last_status_poll =
                 last_udp_recv_time - std::chrono::hours(1);  // poll at once
             this->assembler->reset();
+            if (this->ghost)
+            {
+                this->ghost->reset();
+            }
 
             while (this->is_running && this->cola.connected())
             {
@@ -1419,7 +1694,14 @@ void MultiscanNode::runReceiver()
                 PROFILING_NOTIFY(export_cloud);
                 for (auto& f : this->frames)
                 {
-                    this->publishFrame(f);
+                    if (this->ghost)
+                    {
+                        this->ghost->frame(std::move(f));
+                    }
+                    else
+                    {
+                        this->publishFrame(f);
+                    }
                 }
                 this->frames.clear();
                 PROFILING_NOTIFY(export_cloud);

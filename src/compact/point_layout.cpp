@@ -68,6 +68,7 @@ constexpr std::array<FieldInfo, N_FIELDS> FIELD_INFO = {
      {"index", 4, POINT_FIELD_UINT32},
      {"time", 8, POINT_FIELD_UINT32},  // published as "tl" + "th"
         {"reflective", 4, POINT_FIELD_FLOAT32},
+     {"artifact", 4, POINT_FIELD_FLOAT32},
      }
 };
 }  // namespace
@@ -103,6 +104,7 @@ PointLayout PointLayout::all()
 {
     std::array<bool, N_FIELDS> e;
     e.fill(true);
+    e[static_cast<size_t>(Field::Artifact)] = false;
     return PointLayout{e};
 }
 

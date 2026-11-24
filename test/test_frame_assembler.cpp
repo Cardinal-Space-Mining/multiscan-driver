@@ -218,6 +218,53 @@ TEST(FrameAssembler, CompleteFramesAreEmittedOnTheirLastSegment)
     h.expectFrameContent(h.frames[0], range(0, 12));
 }
 
+TEST(FrameAssembler, SegmentHookSeesAcceptedSegmentsBeforeTheirFrame)
+{
+    Harness h;
+    struct Call
+    {
+        uint64_t frame, segment;
+        uint32_t first_point, points;
+        size_t frames_emitted;  // at the time of the call
+    };
+    std::vector<Call> calls;
+    h.assembler.setSegmentHook(
+        [&](const compact::ScanInfo& info,
+            std::span<const uint8_t> dgram,
+            uint64_t frame,
+            uint32_t first)
+        {
+            EXPECT_EQ(
+                compact::telegramType(dgram),
+                compact::TelegramType::Scan);
+            calls.push_back(
+                {frame, info.segment, first, info.points, h.frames.size()});
+        });
+    // joined mid-revolution: that frame is never emitted, nor hooked
+    for (uint32_t s = 7; s < 12; s++)
+    {
+        h.feed(4, s);
+    }
+    EXPECT_TRUE(calls.empty());
+    for (uint32_t s = 0; s < 12; s++)
+    {
+        h.feed(5, s);
+    }
+    h.feed(5, 3);  // duplicate: not hooked
+    ASSERT_EQ(h.frames.size(), 1u);
+    ASSERT_EQ(calls.size(), 12u);
+    uint32_t first = 0;
+    for (uint32_t s = 0; s < 12; s++)
+    {
+        EXPECT_EQ(calls[s].frame, 5u);
+        EXPECT_EQ(calls[s].segment, s);
+        EXPECT_EQ(calls[s].first_point, first);
+        EXPECT_EQ(calls[s].frames_emitted, 0u);  // the last one too
+        first += calls[s].points;
+    }
+    EXPECT_EQ(h.frames[0].points, first);
+}
+
 TEST(FrameAssembler, ClockOffsetMovesStampAndPointTimes)
 {
     // host clock 1.234567891 s ahead of the sensor; point times are whole us

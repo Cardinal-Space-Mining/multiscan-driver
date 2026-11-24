@@ -126,6 +126,17 @@ public:
     using ClockOffset =
         std::function<int64_t(const compact::ScanInfo& info, uint64_t recv_ns)>;
 
+    /* Called for every segment that is accepted into a frame, once it has
+     * been decoded there and before the frame can be emitted: the telegram,
+     * the frame number and where the segment's points start in the frame.
+     * Not called for the frame joined mid-revolution, which is never
+     * emitted. */
+    using SegmentHook = std::function<void(
+        const compact::ScanInfo& info,
+        std::span<const uint8_t> datagram,
+        uint64_t frame_number,
+        uint32_t first_point)>;
+
     FrameAssembler(
         compact::ScanDecoder& decoder,
         Config config,
@@ -140,6 +151,8 @@ public:
 
     /* Close the current frame if it received nothing for stale_frame_ns. */
     void flushStale(uint64_t now_ns, std::vector<Frame>& out);
+
+    void setSegmentHook(SegmentHook hook) { segment_hook = std::move(hook); }
 
     /* Forget all state, e.g. after reconnecting to the sensor. */
     void reset();
@@ -157,6 +170,7 @@ private:
     compact::ScanDecoder& decoder;
     Config cfg;
     ClockOffset clock_offset;
+    SegmentHook segment_hook;
     uint32_t step;
     int32_t time_field;  // byte offset of the point time, or -1
     uint32_t all_mask;

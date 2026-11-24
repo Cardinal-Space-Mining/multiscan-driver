@@ -66,6 +66,8 @@ enum class Field : uint8_t
     Index,      // beam index within the layer over a full revolution, uint32
     Time,  // us, uint64 published as uint32 fields "tl" (low) and "th" (high)
     Reflective,  // 0 or 1, float32
+    Artifact,    // ghost filter: probability that the point is an artifact,
+                 // float32; -1 = not classified. Not part of all().
     COUNT
 };
 
@@ -85,12 +87,13 @@ class PointLayout
 public:
     static constexpr int32_t ABSENT = -1;
 
-    /* Every field: x y z intensity range azimuth elevation layer echo index tl th reflective (52 bytes) */
+    /* Every sensor field: x y z intensity range azimuth elevation layer echo
+     * index tl th reflective (52 bytes); not artifact */
     static PointLayout all();
 
     /* Parse field names ("x", "y", "z", "intensity", "range", "azimuth",
      * "elevation", "layer", "echo", "index", "tl" or "th" or "time",
-     * "reflective"). x, y and z are required; order and duplicates don't
+     * "reflective", "artifact"). x, y and z are required; order and duplicates don't
      * matter. Returns nullopt and sets `error` for unknown names. */
     static std::optional<PointLayout> fromNames(
         const std::vector<std::string>& names,

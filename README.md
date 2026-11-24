@@ -57,6 +57,7 @@ always packed in this order:
 | `index` | uint32 | beam index within the layer over the whole revolution |
 | `tl` `th` | uint32 | low and high halves of the point's time: µs, host clock |
 | `reflective` | float32 | 1 if the sensor flagged a reflector |
+| `artifact` | float32 | ghost filter probability, -1 = not classified; only with `ghost_filter.mode: annotate` (or listed in `output.point_fields`) |
 
 Clouds are dense, `height` 1. Beams without a return have range 0, and so do
 beams outside a narrowed output range when the sensor zero-fills them. The
@@ -89,6 +90,38 @@ default and units. In short:
 - **`diagnostics.status_period`:** how often the device state, temperature and
   contamination are read.
 
+## Ghost filter
+
+`ghost_filter.*` runs the ghost point (artifact) classifier trained in
+ghost-ml-ws (`annotator_app`) on every frame. `mode: drop` removes the points
+it flags, so clouds get smaller; `mode: annotate` keeps all of them and adds
+the field `artifact` with each point's probability.
+
+It works on segments as they arrive, on one thread of its own. A point is
+judged by its neighbours (2 layers and 4 columns either side, and the same
+place in the two previous frames), so a grid cell is classified as soon as
+all of those have arrived. The multiScan sends its upper and lower seven
+layers half a revolution apart, so about a fifth of the cells wait for the
+last segment of a frame. That remainder is the delay the filter adds; the
+result is identical to classifying the whole frame at once. Measured on a
+Ryzen 5600X with the full model and early exit (indoor scene, nearly every
+cell has a return): ~19 ms of work per frame, spread over the frame, and
+~5 ms added after the last segment, against ~15 ms for the whole frame at
+once. Without early exit a frame takes ~50 ms on one core.
+
+If the filter falls more than two frames behind, frames are published
+unfiltered until it catches up (counted in `/diagnostics`). The model file
+must be for this sensor (14 layers, 360 columns, 20 Hz); the high-resolution
+layers are not part of its grid and their points are never dropped. With
+`sensor.interlaced` the filter doesn't run.
+
+`src/ghost/artifact_filter/artifact_filter.hpp` is a copy of ghost-ml-ws
+`src/ghost_tester/include/artifact_filter/artifact_filter.hpp`; change it
+there (where it is checked against the Python) and copy it over.
+`bench_ghost_filter MODEL [CAPTURE] [--paced]` measures the filter on a
+capture and checks it against the whole-frame result; use it to judge a new
+machine.
+
 ## Timestamps
 
 The sensor's clock counts from power-up and drifts by a few ppm against the
@@ -118,7 +151,8 @@ Keep `sensor.time_sync.mode: off` with `time.source: estimated`.
 
 ## Diagnostics
 
-`/diagnostics` carries six statuses, prefixed `multiscan_driver:`:
+`/diagnostics` carries six statuses, prefixed `multiscan_driver:`, and a
+seventh, Ghost filter, when it is enabled:
 
 | Status | Contents |
 |---|---|
@@ -128,6 +162,7 @@ Keep `sensor.time_sync.mode: off` with `time.source: estimated`.
 | Stream | frames/s, IMU samples/s, lost telegrams, partial, discarded and missed frames, decode errors |
 | Time | source, host − sensor offset, drift, clock restarts |
 | Configuration | settings verified, and each setting that wasn't applied or reads back differently |
+| Ghost filter | points flagged per frame, delay added and work per frame, frames left unfiltered |
 
 Contamination is only evaluated when `sensor.contamination.strategy` isn't
 `inactive`. Changes in device state and contamination are also logged.
@@ -149,6 +184,7 @@ Contamination is only evaluated when `sensor.contamination.strategy` isn't
 ```
 src/compact/        Compact format decoder and the published point layout
 src/frame_assembler segments -> frames by frame number; time offset applied here
+src/ghost/          ghost point filter (copy of artifact_filter.hpp, per-segment driver)
 src/net/            batched UDP receive (recvmmsg, kernel receive timestamps)
 src/sopas/          CoLa A client, start/stop/status sequence, sensor settings
 src/time_sync       sensor clock -> host clock estimator
@@ -170,6 +206,9 @@ sensor. CI runs the same on Jazzy and Lyrical (`.github/`).
   recording of the real device in `test/data/sopas_transcript_fw2.3.txt`.
 - `test_frame_assembler`, `test_udp_receiver` and `test_time_sync` cover
   framing, the socket layer and the clock estimator.
+- `test_ghost_filter` checks that frames filtered segment by segment get
+  exactly the probabilities of the whole frame classified at once, on the
+  captures, with 30-tree cuts of the models (`test/data/ghost_*`).
 - `bench_decoder` (not a test) times decoding on the captures. A full
   revolution takes ~0.1 ms with the default layers.
 

@@ -329,6 +329,7 @@ compact::Error FrameAssembler::add(
              static_cast<uint64_t>(std::countr_zero(expected_mask)));
     }
 
+    const uint32_t first_point = used_points;
     seen_mask |= bit;
     used_points += info.points;
     stamp_ns = std::min(stamp_ns, seg_stamp_ns);
@@ -342,6 +343,10 @@ compact::Error FrameAssembler::add(
         expected_mask |= bit;
         counters.expected_mask_changes++;
         partial_streak = 0;
+    }
+    if (segment_hook && !joined_mid_frame)  // that frame is never emitted
+    {
+        segment_hook(info, datagram, frame_number, first_point);
     }
     if ((seen_mask & expected_mask) == expected_mask)
     {

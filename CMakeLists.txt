@@ -20,6 +20,7 @@ add_library(multiscan_core STATIC
   "src/compact/decoder.cpp"
   "src/compact/point_layout.cpp"
   "src/frame_assembler.cpp"
+  "src/ghost/ghost_filter.cpp"
   "src/net/udp_receiver.cpp"
   "src/sopas/cola_client.cpp"
   "src/sopas/sensor_session.cpp"
@@ -81,9 +82,16 @@ if(BUILD_TESTING)
     ament_add_gtest(test_time_sync "test/test_time_sync.cpp")
     target_link_libraries(test_time_sync multiscan_core)
 
+    ament_add_gtest(test_ghost_filter "test/test_ghost_filter.cpp")
+    target_link_libraries(test_ghost_filter multiscan_test_support)
+
     # not a test: decoder timing on the captures
     add_executable(bench_decoder "test/bench_decoder.cpp")
     target_link_libraries(bench_decoder multiscan_test_support)
+
+    # not a test: ghost filter timing (bench_ghost_filter MODEL [CAPTURE] [--paced])
+    add_executable(bench_ghost_filter "test/bench_ghost_filter.cpp")
+    target_link_libraries(bench_ghost_filter multiscan_test_support)
 endif()
 
 # --- Export -------------------------------------------------------------------

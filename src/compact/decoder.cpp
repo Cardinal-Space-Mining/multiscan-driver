@@ -404,7 +404,8 @@ Error ScanDecoder::decode(
                   o_layer = L.offset(Field::Layer),
                   o_echo = L.offset(Field::Echo),
                   o_idx = L.offset(Field::Index), o_t = L.offset(Field::Time),
-                  o_refl = L.offset(Field::Reflective);
+                  o_refl = L.offset(Field::Reflective),
+                  o_art = L.offset(Field::Artifact);
 
     uint64_t t_min = std::numeric_limits<uint64_t>::max(), t_max = 0;
     for (size_t m = 0; m < n_modules; m++)
@@ -495,6 +496,7 @@ Error ScanDecoder::decode(
                     o_refl,
                     has_prop ? static_cast<float>(tuple[prop_off] & 0x01)
                              : 0.f);
+                store<float>(p, o_art, -1.f);  // set by the ghost filter
             }
         }
     }
